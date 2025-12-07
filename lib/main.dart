@@ -10,6 +10,7 @@ import 'package:filesize/filesize.dart';
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:app_links/app_links.dart';
 import 'worker.dart';
 
 void main(List<String> args) {
@@ -141,6 +142,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
   bool _isUnrarAvailable = false;
   bool _is7zAvailable = false;
+  final _appLinks = AppLinks();
 
   @override
   void initState() {
@@ -149,10 +151,28 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     _checkUnrarAvailability();
     _check7zAvailability();
     _refreshFiles();
+    _initDeepLinks();
     
-    // Handle Command Line Arguments
+    // Handle Command Line Arguments (Linux/Windows style)
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _processArgs();
+    });
+  }
+
+  void _initDeepLinks() {
+    // Handle deep links (macOS file opening)
+    _appLinks.uriLinkStream.listen((uri) {
+      if (uri.scheme == 'file') {
+        String path = uri.toFilePath();
+        debugPrint("Received file open request: $path");
+        // Ensure path exists and we are mounted
+        if (mounted) {
+           // Decode URL encoded characters if necessary, but toFilePath usually handles it
+           _navigateTo(path);
+        }
+      }
+    }, onError: (err) {
+      debugPrint('Deep link error: $err');
     });
   }
   

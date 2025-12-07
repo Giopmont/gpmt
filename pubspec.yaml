@@ -44,6 +44,7 @@ dependencies:
   open_filex: ^4.7.0
   super_native_extensions: ^0.9.1
   path_provider: ^2.1.5
+  app_links: ^6.4.1
 
 dev_dependencies:
   flutter_test:
