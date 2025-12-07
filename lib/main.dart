@@ -18,7 +18,7 @@ void main() {
 class IconHelper {
   static IconData getIcon(String path, bool isDirectory) {
     if (isDirectory) return Icons.folder;
-    
+
     final ext = p.extension(path).toLowerCase();
     switch (ext) {
       case '.zip':
@@ -55,10 +55,10 @@ class IconHelper {
         return Icons.insert_drive_file;
     }
   }
-  
+
   static Color getIconColor(String path, bool isDirectory) {
     if (isDirectory) return const Color(0xFFFFD54F); // Windows folder yellow
-    
+
     final ext = p.extension(path).toLowerCase();
     switch (ext) {
       case '.zip':
@@ -123,13 +123,13 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   String _currentPath = Directory.current.path;
   List<FileSystemEntity> _files = [];
   final Set<String> _selectedPaths = {};
-  
+
   // Archive viewing state
   bool _isViewingArchive = false;
   String? _archivePath;
   List<dynamic> _currentArchiveEntries = []; // Can hold ArchiveFile or RarEntry
   InputFileStream? _archiveInputStream;
-  
+
   // Temp dir for drag-and-drop cache
   Directory? _sessionTempDir;
 
@@ -144,7 +144,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     _check7zAvailability();
     _refreshFiles();
   }
-  
+
   void _createSessionTempDir() {
     try {
       _sessionTempDir = Directory.systemTemp.createTempSync('winrar_session_');
@@ -185,7 +185,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     _cleanupSessionTempDir();
     super.dispose();
   }
-  
+
   void _cleanupSessionTempDir() {
     try {
       if (_sessionTempDir != null && _sessionTempDir!.existsSync()) {
@@ -274,12 +274,16 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
   bool _isArchive(String path) {
     final ext = p.extension(path).toLowerCase();
-    return ext == '.zip' || ext == '.tar' || ext == '.tgz' || ext == '.gz' || ext == '.rar';
+    return ext == '.zip' ||
+        ext == '.tar' ||
+        ext == '.tgz' ||
+        ext == '.gz' ||
+        ext == '.rar';
   }
 
   Future<void> _openArchive(String path) async {
     final ext = p.extension(path).toLowerCase();
-    
+
     // RAR handling
     if (ext == '.rar') {
       setState(() {
@@ -296,8 +300,13 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             context: context,
             builder: (ctx) => AlertDialog(
               title: const Text("Unrar Not Found"),
-              content: const Text("To open RAR files, please install 'unrar' on your system."),
-              actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK"))],
+              content: const Text(
+                  "To open RAR files, please install 'unrar' on your system."),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text("OK"))
+              ],
             ),
           );
         }
@@ -313,7 +322,11 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             builder: (ctx) => AlertDialog(
               title: const Text("Error Opening RAR"),
               content: Text("Failed to list RAR contents: ${result.stderr}"),
-              actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK"))],
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text("OK"))
+              ],
             ),
           );
         }
@@ -325,25 +338,27 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
       final lines = output.split('\n');
       List<RarEntry> rarEntries = [];
-      
+
       // Regex for "Attributes Size Date Time Name" format
       // Attributes: \S+ (can be 7 chars like ..A.... or 10 like -rw-r--r--)
       // Size: digits
       // Date: non-whitespace
       // Time: non-whitespace
       // Name: rest
-      final attrFirstRegex = RegExp(r'^\s*(\S+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.+)$');
+      final attrFirstRegex =
+          RegExp(r'^\s*(\S+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.+)$');
 
       for (final line in lines) {
         if (line.trim().isEmpty) continue;
         // Ignore Headers and Footers
-        if (line.startsWith('---') || 
-            line.startsWith('Archive:') || 
-            line.startsWith('Details:') || 
+        if (line.startsWith('---') ||
+            line.startsWith('Archive:') ||
+            line.startsWith('Details:') ||
             line.contains('Attributes      Size') ||
-            line.startsWith('UNRAR') || 
+            line.startsWith('UNRAR') ||
             line.contains('Alexander Roshal') ||
-            line.trim().startsWith(RegExp(r'\d+\s+\d+$'))) { // Summary line (Size Count)
+            line.trim().startsWith(RegExp(r'\d+\s+\d+$'))) {
+          // Summary line (Size Count)
           continue;
         }
 
@@ -356,12 +371,12 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             final dateStr = match.group(3)!;
             final timeStr = match.group(4)!;
             final name = match.group(5)!.trim();
-            
+
             if (attr.startsWith('Attributes')) continue;
 
             final size = int.tryParse(sizeStr) ?? 0;
             DateTime? dateModified;
-            
+
             final dateTimeString = '$dateStr $timeStr';
             List<String> formats = [
               'yyyy-MM-dd HH:mm',
@@ -371,10 +386,10 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             ];
 
             for (final fmt in formats) {
-               try {
-                 dateModified = DateFormat(fmt).parse(dateTimeString);
-                 break;
-               } catch (_) {}
+              try {
+                dateModified = DateFormat(fmt).parse(dateTimeString);
+                break;
+              } catch (_) {}
             }
 
             final isDirectory = attr.startsWith('d') || attr.contains('D');
@@ -400,7 +415,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       });
       return;
     }
-    
+
     // Other archive types handling (Zip, Tar, Gz)
     try {
       _closeArchiveStream(); // Close previous if exists
@@ -418,7 +433,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         inputStream.close();
         throw Exception("Unsupported format: $ext");
       }
-      
+
       setState(() {
         _isViewingArchive = true;
         _archivePath = path;
@@ -434,14 +449,18 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           builder: (ctx) => AlertDialog(
             title: const Text("Error Opening Archive"),
             content: Text(e.toString()),
-            actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK"))],
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx), child: const Text("OK"))
+            ],
           ),
         );
       }
     }
   }
 
-  void _toggleSelection(String name) { // Changed parameter from path to name for archive entries
+  void _toggleSelection(String name) {
+    // Changed parameter from path to name for archive entries
     setState(() {
       if (_selectedPaths.contains(name)) {
         _selectedPaths.remove(name);
@@ -453,15 +472,17 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
   Future<void> _extractSelected() async {
     if (!_isViewingArchive && _selectedPaths.isEmpty) return;
-    
+
     String? sourceArchive = _archivePath;
-    if (!_isViewingArchive) { 
+    if (!_isViewingArchive) {
       if (_selectedPaths.length == 1 && _isArchive(_selectedPaths.first)) {
         sourceArchive = _selectedPaths.first;
       } else {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Please select a single archive or open one to extract.')),
+            const SnackBar(
+                content: Text(
+                    'Please select a single archive or open one to extract.')),
           );
         }
         return;
@@ -474,57 +495,56 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     String defaultName = p.basenameWithoutExtension(sourceArchive);
     String parentDir = p.dirname(sourceArchive);
     String defaultDest = p.join(parentDir, defaultName);
-    
+
     final String? outputDir = await showDialog<String>(
-      context: context,
-      builder: (context) {
-        final TextEditingController controller = TextEditingController(text: defaultDest);
-        return AlertDialog(
-          title: const Text("Extract To"),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text("Destination path:"),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: controller,
-                      decoration: const InputDecoration(
-                        border: OutlineInputBorder(),
-                        contentPadding: EdgeInsets.symmetric(horizontal: 8),
+        context: context,
+        builder: (context) {
+          final TextEditingController controller =
+              TextEditingController(text: defaultDest);
+          return AlertDialog(
+            title: const Text("Extract To"),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text("Destination path:"),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: controller,
+                        decoration: const InputDecoration(
+                          border: OutlineInputBorder(),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 8),
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton(
-                    icon: const Icon(Icons.folder_open),
-                    onPressed: () async {
-                      String? selected = await FilePicker.platform.getDirectoryPath();
-                      if (selected != null) {
-                        controller.text = selected;
-                      }
-                    },
-                  ),
-                ],
+                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: const Icon(Icons.folder_open),
+                      onPressed: () async {
+                        String? selected =
+                            await FilePicker.platform.getDirectoryPath();
+                        controller.text = selected ?? controller.text;
+                      },
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, null),
+                child: const Text("Cancel"),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context, controller.text),
+                child: const Text("Extract"),
               ),
             ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, null),
-              child: const Text("Cancel"),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(context, controller.text),
-              child: const Text("Extract"),
-            ),
-          ],
-        );
-      }
-    );
+          );
+        });
 
     if (outputDir == null) return;
 
@@ -536,9 +556,15 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         title: const Text("Extraction Options"),
         content: const Text("How should existing files be handled?"),
         actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, null), child: const Text("Cancel")),
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Skip Existing")),
-            TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("Overwrite All")),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, null),
+              child: const Text("Cancel")),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text("Skip Existing")),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text("Overwrite All")),
         ],
       ),
     );
@@ -553,8 +579,13 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             context: context,
             builder: (ctx) => AlertDialog(
               title: const Text("Unrar Not Found"),
-              content: const Text("To extract RAR files, please install 'unrar' on your system."),
-              actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK"))],
+              content: const Text(
+                  "To extract RAR files, please install 'unrar' on your system."),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text("OK"))
+              ],
             ),
           );
         }
@@ -567,7 +598,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       } else {
         unrarArgs.add('-o-'); // Skip existing
       }
-      
+
       unrarArgs.add(sourceArchive);
 
       if (_isViewingArchive && _selectedPaths.isNotEmpty) {
@@ -586,7 +617,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
       try {
         final result = await Process.run('unrar', unrarArgs);
-        
+
         if (mounted) Navigator.pop(context); // Close loading
 
         if (result.exitCode == 0) {
@@ -598,7 +629,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         } else {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('RAR extraction failed: ${result.stderr}')),
+              SnackBar(
+                  content: Text('RAR extraction failed: ${result.stderr}')),
             );
           }
         }
@@ -610,7 +642,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           );
         }
       }
-      return; 
+      return;
     }
 
     // Other archive types extraction (Zip/Tar) via Isolate
@@ -618,7 +650,9 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     final task = ExtractTask(
       sourcePath: sourceArchive,
       destinationPath: outputDir,
-      selectedFiles: (_isViewingArchive && _selectedPaths.isNotEmpty) ? _selectedPaths.toList() : [],
+      selectedFiles: (_isViewingArchive && _selectedPaths.isNotEmpty)
+          ? _selectedPaths.toList()
+          : [],
       overwrite: overwriteChoice,
       useSystem7z: _is7zAvailable,
       flatten: false,
@@ -642,16 +676,21 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text("Extracting...", style: TextStyle(fontWeight: FontWeight.bold)),
+                  const Text("Extracting...",
+                      style: TextStyle(fontWeight: FontWeight.bold)),
                   const SizedBox(height: 20),
                   ValueListenableBuilder<double>(
                     valueListenable: progressNotifier,
-                    builder: (context, value, child) => LinearProgressIndicator(value: value > 0 ? value : null),
+                    builder: (context, value, child) => LinearProgressIndicator(
+                        value: value > 0 ? value : null),
                   ),
                   const SizedBox(height: 10),
                   ValueListenableBuilder<String>(
                     valueListenable: statusNotifier,
-                    builder: (context, value, child) => Text(value, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis),
+                    builder: (context, value, child) => Text(value,
+                        textAlign: TextAlign.center,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis),
                   ),
                 ],
               ),
@@ -663,17 +702,17 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
     try {
       await Isolate.spawn(extractWorker, task);
-      
+
       await for (final message in receivePort) {
         if (message is Map) {
           if (message['type'] == 'progress') {
-             final filename = message['filename'];
-             final current = message['current'];
-             final total = message['total'];
-             statusNotifier.value = "Extracting $filename ($current/$total)";
-             if (total > 0) {
-               progressNotifier.value = current / total;
-             }
+            final filename = message['filename'];
+            final current = message['current'];
+            final total = message['total'];
+            statusNotifier.value = "Extracting $filename ($current/$total)";
+            if (total > 0) {
+              progressNotifier.value = current / total;
+            }
           } else if (message['type'] == 'done') {
             break;
           } else if (message['type'] == 'error') {
@@ -681,7 +720,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           }
         }
       }
-      
+
       if (mounted) Navigator.pop(context); // Close loading
 
       if (mounted) {
@@ -703,11 +742,11 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
   Future<void> _addToArchive() async {
     if (_selectedPaths.isEmpty) {
-       if (mounted) {
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Select files to add to archive.')),
         );
-       }
+      }
       return;
     }
 
@@ -730,7 +769,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         }
       }
       encoder.close();
-      
+
       _refreshFiles(); // Refresh current view to show new file if in same dir
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -747,22 +786,29 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   }
 
   void _deleteSelected() {
-     if (_selectedPaths.isEmpty) return;
-     
-     // Confirmation dialog
-     if (mounted) {
-       showDialog(context: context, builder: (ctx) => AlertDialog(
-         title: const Text("Delete files"),
-         content: const Text("Are you sure you want to delete the selected files?"),
-         actions: [
-           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
-           TextButton(onPressed: () {
-             Navigator.pop(ctx);
-             _performDelete();
-           }, child: const Text("Yes")),
-         ],
-       ));
-     }
+    if (_selectedPaths.isEmpty) return;
+
+    // Confirmation dialog
+    if (mounted) {
+      showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+                title: const Text("Delete files"),
+                content: const Text(
+                    "Are you sure you want to delete the selected files?"),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text("Cancel")),
+                  TextButton(
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _performDelete();
+                      },
+                      child: const Text("Yes")),
+                ],
+              ));
+    }
   }
 
   Future<String?> _extractFileForDrag(dynamic entry) async {
@@ -770,32 +816,35 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
     try {
       // Use session temp dir if available, else fallback to new temp
-      final tempDir = _sessionTempDir ?? Directory.systemTemp.createTempSync('winrar_drag_');
-      
+      final tempDir = _sessionTempDir ??
+          Directory.systemTemp.createTempSync('winrar_drag_');
+
       if (entry is FileSystemEntity) {
-        return entry.path; 
+        return entry.path;
       }
-      
+
       String name;
       bool isDir;
-      
+
       if (entry is ArchiveFile) {
         name = entry.name;
         isDir = !entry.isFile;
-        if (isDir) return null; 
-        
+        if (isDir) return null;
+
         final destPath = p.join(tempDir.path, p.basename(name));
         final destFile = File(destPath);
-        
+
         // CACHE HIT CHECK
         if (destFile.existsSync()) {
           return destPath;
         }
 
         if (mounted) {
-           ScaffoldMessenger.of(context).showSnackBar(
-             const SnackBar(content: Text('Preparing drag...'), duration: Duration(milliseconds: 500)),
-           );
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('Preparing drag...'),
+                duration: Duration(milliseconds: 500)),
+          );
         }
 
         // Use Isolate for extraction to avoid freeze/crash on large files
@@ -809,30 +858,29 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           flatten: true,
           sendPort: receivePort.sendPort,
         );
-        
+
         // Show a non-blocking overlay progress or just await
         // Since drag provider expects a future, we just await.
         // To show progress, we might need a Overlay.
         // For now, let's just ensure it DOESN'T CRASH/FREEZE UI.
         // Users will see the drag "hover" until done.
-        
+
         await Isolate.spawn(extractWorker, task);
-        
+
         await for (final message in receivePort) {
-           if (message is Map) {
-             if (message['type'] == 'done') break;
-             if (message['type'] == 'error') throw Exception(message['message']);
-           }
+          if (message is Map) {
+            if (message['type'] == 'done') break;
+            if (message['type'] == 'error') throw Exception(message['message']);
+          }
         }
         receivePort.close();
 
         return destPath;
-      } 
-      else if (entry is RarEntry) {
+      } else if (entry is RarEntry) {
         name = entry.name;
         isDir = entry.isDirectory;
         if (isDir) return null;
-        
+
         final destPath = p.join(tempDir.path, p.basename(name));
         final destFile = File(destPath);
 
@@ -842,18 +890,20 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         }
 
         if (mounted) {
-           ScaffoldMessenger.of(context).showSnackBar(
-             const SnackBar(content: Text('Preparing drag...'), duration: Duration(milliseconds: 500)),
-           );
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('Preparing drag...'),
+                duration: Duration(milliseconds: 500)),
+          );
         }
-        
+
         final args = ['e', '-y', _archivePath!, name, tempDir.path];
         final result = await Process.run('unrar', args);
-        
+
         if (result.exitCode == 0) {
-           if (destFile.existsSync()) {
-             return destPath;
-           }
+          if (destFile.existsSync()) {
+            return destPath;
+          }
         }
       }
     } catch (e) {
@@ -912,51 +962,58 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     if (_selectedPaths.isEmpty) {
       // Show info about current directory/archive
       title = _isViewingArchive ? "Archive Information" : "Folder Information";
-      details.add(Text("Path: ${_isViewingArchive ? _archivePath : _currentPath}"));
+      details.add(
+          Text("Path: ${_isViewingArchive ? _archivePath : _currentPath}"));
       details.add(const SizedBox(height: 8));
-      
-      int count = _isViewingArchive ? _currentArchiveEntries.length : _files.length;
+
+      int count =
+          _isViewingArchive ? _currentArchiveEntries.length : _files.length;
       details.add(Text("Contains: $count items"));
-      
+
       // Calculate total size if possible (simple sum)
       int totalSize = 0;
       if (_isViewingArchive) {
-         for (var e in _currentArchiveEntries) {
-           if (e is ArchiveFile) totalSize += e.size;
-           if (e is RarEntry) totalSize += e.size;
-         }
-         details.add(Text("Total Packed Size: ${filesize(totalSize)}"));
+        for (var e in _currentArchiveEntries) {
+          if (e is ArchiveFile) totalSize += e.size;
+          if (e is RarEntry) totalSize += e.size;
+        }
+        details.add(Text("Total Packed Size: ${filesize(totalSize)}"));
       }
     } else {
       // Show info about selection
       title = "Selection Details";
       details.add(Text("Selected: ${_selectedPaths.length} items"));
       details.add(const Divider());
-      
+
       if (_selectedPaths.length == 1) {
         String path = _selectedPaths.first;
         details.add(Text("Name: ${p.basename(path)}"));
-        
+
         if (!_isViewingArchive) {
           try {
-             final stat = File(path).statSync();
-             details.add(Text("Size: ${filesize(stat.size)}"));
-             details.add(Text("Modified: ${DateFormat('yyyy-MM-dd HH:mm').format(stat.modified)}"));
-             details.add(Text("Permissions: ${stat.modeString()}"));
+            final stat = File(path).statSync();
+            details.add(Text("Size: ${filesize(stat.size)}"));
+            details.add(Text(
+                "Modified: ${DateFormat('yyyy-MM-dd HH:mm').format(stat.modified)}"));
+            details.add(Text("Permissions: ${stat.modeString()}"));
           } catch (e) {
-             details.add(const Text("Could not read file stats."));
+            details.add(const Text("Could not read file stats."));
           }
         } else {
           // Find entry in archive list
           var entry = _currentArchiveEntries.firstWhere((e) {
-             if (e is ArchiveFile) return e.name == path;
-             if (e is RarEntry) return e.name == path;
-             return false;
+            if (e is ArchiveFile) return e.name == path;
+            if (e is RarEntry) return e.name == path;
+            return false;
           }, orElse: () => null);
-          
+
           if (entry != null) {
-             if (entry is ArchiveFile) details.add(Text("Size: ${filesize(entry.size)}"));
-             if (entry is RarEntry) details.add(Text("Size: ${filesize(entry.size)}"));
+            if (entry is ArchiveFile) {
+              details.add(Text("Size: ${filesize(entry.size)}"));
+            }
+            if (entry is RarEntry) {
+              details.add(Text("Size: ${filesize(entry.size)}"));
+            }
           }
         }
       } else {
@@ -975,7 +1032,9 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           children: details,
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Close")),
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("Close")),
         ],
       ),
     );
@@ -994,7 +1053,9 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
     if (ext != '.rar' && ext != '.zip') {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Repair is only supported for RAR and ZIP archives.')),
+        const SnackBar(
+            content:
+                Text('Repair is only supported for RAR and ZIP archives.')),
       );
       return;
     }
@@ -1004,10 +1065,15 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text("Repair Archive"),
-        content: Text("Attempt to repair '$path'?\nThis will create a fixed copy."),
+        content:
+            Text("Attempt to repair '$path'?\nThis will create a fixed copy."),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancel")),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("Repair")),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text("Cancel")),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text("Repair")),
         ],
       ),
     );
@@ -1017,23 +1083,25 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     if (ext == '.rar') {
       if (!_isUnrarAvailable) {
         if (mounted) {
-           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('unrar not found.')));
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('unrar not found.')));
         }
         return;
       }
-      
+
       // unrar r <archive> <path_to_save_fixed>
       // unrar usually fixes in place or creates 'fixed.arcname.rar'
       try {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Attempting repair...')));
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Attempting repair...')));
         }
         final result = await Process.run('unrar', ['r', path]);
         if (mounted) {
           if (result.exitCode == 0) {
-             _showInfoDialog("Repair Complete", "Output:\n${result.stdout}");
+            _showInfoDialog("Repair Complete", "Output:\n${result.stdout}");
           } else {
-             _showInfoDialog("Repair Failed", "Error:\n${result.stderr}");
+            _showInfoDialog("Repair Failed", "Error:\n${result.stderr}");
           }
         }
       } catch (e) {
@@ -1042,7 +1110,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     } else {
       // Zip repair logic (generic placeholder or basic zip -F if available)
       if (mounted) {
-         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Zip repair not fully implemented yet.')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Zip repair not fully implemented yet.')));
       }
     }
   }
@@ -1053,7 +1122,10 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       builder: (ctx) => AlertDialog(
         title: Text(title),
         content: SingleChildScrollView(child: Text(content)),
-        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK"))],
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text("OK"))
+        ],
       ),
     );
   }
@@ -1184,7 +1256,9 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      _isViewingArchive ? "$_archivePath (Archive)" : _currentPath,
+                      _isViewingArchive
+                          ? "$_archivePath (Archive)"
+                          : _currentPath,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 13),
                     ),
@@ -1211,33 +1285,49 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             child: const Row(
               children: [
                 SizedBox(width: 40), // Checkbox space
-                Expanded(flex: 5, child: Text("Name", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
-                Expanded(flex: 2, child: Text("Size", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
-                Expanded(flex: 2, child: Text("Type", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
-                Expanded(flex: 3, child: Text("Modified", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
+                Expanded(
+                    flex: 5,
+                    child: Text("Name",
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 13))),
+                Expanded(
+                    flex: 2,
+                    child: Text("Size",
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 13))),
+                Expanded(
+                    flex: 2,
+                    child: Text("Type",
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 13))),
+                Expanded(
+                    flex: 3,
+                    child: Text("Modified",
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 13))),
               ],
             ),
           ),
           const Divider(height: 1),
           // List
           Expanded(
-            child: _isViewingArchive 
-              ? ListView.builder(
-                  itemCount: _currentArchiveEntries.length + 1, // +1 for ".."
-                  itemBuilder: (context, index) {
-                    if (index == 0) return _buildParentDirItem();
-                    final entry = _currentArchiveEntries[index - 1];
-                    return _buildArchiveEntryItem(entry);
-                  },
-                )
-              : ListView.builder(
-                  itemCount: _files.length + 1, // +1 for ".."
-                  itemBuilder: (context, index) {
-                    if (index == 0) return _buildParentDirItem();
-                    final file = _files[index - 1];
-                    return _buildFileItem(file);
-                  },
-                ),
+            child: _isViewingArchive
+                ? ListView.builder(
+                    itemCount: _currentArchiveEntries.length + 1, // +1 for ".."
+                    itemBuilder: (context, index) {
+                      if (index == 0) return _buildParentDirItem();
+                      final entry = _currentArchiveEntries[index - 1];
+                      return _buildArchiveEntryItem(entry);
+                    },
+                  )
+                : ListView.builder(
+                    itemCount: _files.length + 1, // +1 for ".."
+                    itemBuilder: (context, index) {
+                      if (index == 0) return _buildParentDirItem();
+                      final file = _files[index - 1];
+                      return _buildFileItem(file);
+                    },
+                  ),
           ),
         ],
       ),
@@ -1251,11 +1341,12 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         padding: const EdgeInsets.symmetric(vertical: 2),
         child: Row(
           children: [
-             const SizedBox(width: 40, child: Icon(Icons.folder_open, size: 18)),
-             const Expanded(flex: 5, child: Text("..", style: TextStyle(fontSize: 13))),
-             Expanded(flex: 2, child: Container()),
-             Expanded(flex: 2, child: Container()),
-             Expanded(flex: 3, child: Container()),
+            const SizedBox(width: 40, child: Icon(Icons.folder_open, size: 18)),
+            const Expanded(
+                flex: 5, child: Text("..", style: TextStyle(fontSize: 13))),
+            Expanded(flex: 2, child: Container()),
+            Expanded(flex: 2, child: Container()),
+            Expanded(flex: 3, child: Container()),
           ],
         ),
       ),
@@ -1266,17 +1357,18 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     final name = p.basename(file.path);
     final isSelected = _selectedPaths.contains(file.path);
     final isDir = file is Directory;
-    
+
     String sizeStr = "";
     String dateStr = "";
     String typeStr = "File";
-    
+
     try {
       final stat = file.statSync();
       dateStr = DateFormat('yyyy-MM-dd HH:mm').format(stat.modified);
       if (file is File) {
         sizeStr = filesize(stat.size);
-        typeStr = "${p.extension(file.path).toUpperCase().replaceAll('.', '')} File";
+        typeStr =
+            "${p.extension(file.path).toUpperCase().replaceAll('.', '')} File";
         if (typeStr.trim().isEmpty) typeStr = "File";
       } else {
         typeStr = "File Folder";
@@ -1293,26 +1385,35 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         } else if (_isArchive(file.path)) {
           _navigateTo(file.path);
         } else {
-           OpenFilex.open(file.path);
+          OpenFilex.open(file.path);
         }
       },
       child: Container(
-        color: isSelected ? const Color(0xFFCCE8FF) : null, // Windows Selection Blue
+        color: isSelected
+            ? const Color(0xFFCCE8FF)
+            : null, // Windows Selection Blue
         padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 4),
         child: Row(
           children: [
             SizedBox(
-              width: 32, 
-              child: Icon(
-                IconHelper.getIcon(file.path, isDir), 
-                color: IconHelper.getIconColor(file.path, isDir),
-                size: 20
-              )
-            ),
-            Expanded(flex: 5, child: Text(name, style: const TextStyle(fontSize: 13), overflow: TextOverflow.ellipsis)),
-            Expanded(flex: 2, child: Text(sizeStr, style: const TextStyle(fontSize: 13))),
-            Expanded(flex: 2, child: Text(typeStr, style: const TextStyle(fontSize: 13))),
-            Expanded(flex: 3, child: Text(dateStr, style: const TextStyle(fontSize: 13))),
+                width: 32,
+                child: Icon(IconHelper.getIcon(file.path, isDir),
+                    color: IconHelper.getIconColor(file.path, isDir),
+                    size: 20)),
+            Expanded(
+                flex: 5,
+                child: Text(name,
+                    style: const TextStyle(fontSize: 13),
+                    overflow: TextOverflow.ellipsis)),
+            Expanded(
+                flex: 2,
+                child: Text(sizeStr, style: const TextStyle(fontSize: 13))),
+            Expanded(
+                flex: 2,
+                child: Text(typeStr, style: const TextStyle(fontSize: 13))),
+            Expanded(
+                flex: 3,
+                child: Text(dateStr, style: const TextStyle(fontSize: 13))),
           ],
         ),
       ),
@@ -1339,19 +1440,20 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
               color: Colors.white.withValues(alpha: 0.8), // Transparent white
               borderRadius: BorderRadius.circular(8),
               border: Border.all(color: Colors.blueAccent),
-              boxShadow: const [BoxShadow(blurRadius: 5, color: Colors.black26)],
+              boxShadow: const [
+                BoxShadow(blurRadius: 5, color: Colors.black26)
+              ],
             ),
             padding: const EdgeInsets.all(8),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  IconHelper.getIcon(file.path, isDir), 
-                  color: IconHelper.getIconColor(file.path, isDir),
-                  size: 24
-                ),
+                Icon(IconHelper.getIcon(file.path, isDir),
+                    color: IconHelper.getIconColor(file.path, isDir), size: 24),
                 const SizedBox(width: 8),
-                Text(name, style: const TextStyle(fontSize: 14, decoration: TextDecoration.none)),
+                Text(name,
+                    style: const TextStyle(
+                        fontSize: 14, decoration: TextDecoration.none)),
               ],
             ),
           ),
@@ -1389,7 +1491,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       isDir = false;
       isSelected = false;
     }
-    
+
     final row = InkWell(
       onTap: () => _toggleSelection(name),
       child: Container(
@@ -1398,17 +1500,22 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         child: Row(
           children: [
             SizedBox(
-              width: 32, 
-              child: Icon(
-                IconHelper.getIcon(name, isDir), 
-                color: IconHelper.getIconColor(name, isDir),
-                size: 20
-              )
-            ),
-            Expanded(flex: 5, child: Text(name, style: const TextStyle(fontSize: 13), overflow: TextOverflow.ellipsis)),
-            Expanded(flex: 2, child: Text(sizeStr, style: const TextStyle(fontSize: 13))),
-            Expanded(flex: 2, child: Text(typeStr, style: const TextStyle(fontSize: 13))),
-            Expanded(flex: 3, child: Text("", style: const TextStyle(fontSize: 13))),
+                width: 32,
+                child: Icon(IconHelper.getIcon(name, isDir),
+                    color: IconHelper.getIconColor(name, isDir), size: 20)),
+            Expanded(
+                flex: 5,
+                child: Text(name,
+                    style: const TextStyle(fontSize: 13),
+                    overflow: TextOverflow.ellipsis)),
+            Expanded(
+                flex: 2,
+                child: Text(sizeStr, style: const TextStyle(fontSize: 13))),
+            Expanded(
+                flex: 2,
+                child: Text(typeStr, style: const TextStyle(fontSize: 13))),
+            Expanded(
+                flex: 3, child: Text("", style: const TextStyle(fontSize: 13))),
           ],
         ),
       ),
@@ -1438,19 +1545,20 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
               color: Colors.white.withValues(alpha: 0.8),
               borderRadius: BorderRadius.circular(8),
               border: Border.all(color: Colors.purpleAccent),
-              boxShadow: const [BoxShadow(blurRadius: 5, color: Colors.black26)],
+              boxShadow: const [
+                BoxShadow(blurRadius: 5, color: Colors.black26)
+              ],
             ),
             padding: const EdgeInsets.all(8),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  IconHelper.getIcon(name, isDir), 
-                  color: IconHelper.getIconColor(name, isDir),
-                  size: 24
-                ),
+                Icon(IconHelper.getIcon(name, isDir),
+                    color: IconHelper.getIconColor(name, isDir), size: 24),
                 const SizedBox(width: 8),
-                Text(name, style: const TextStyle(fontSize: 14, decoration: TextDecoration.none)),
+                Text(name,
+                    style: const TextStyle(
+                        fontSize: 14, decoration: TextDecoration.none)),
               ],
             ),
           ),
@@ -1463,9 +1571,10 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   }
 
   Widget _buildStatusBar() {
-    final count = _isViewingArchive ? _currentArchiveEntries.length : _files.length;
+    final count =
+        _isViewingArchive ? _currentArchiveEntries.length : _files.length;
     final selectedCount = _selectedPaths.length;
-    
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       color: const Color(0xFFDDDDDD),
