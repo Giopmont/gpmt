@@ -33,6 +33,12 @@
 		<dict>
 			<key>CFBundleTypeName</key>
 			<string>ZIP Archive</string>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>zip</string>
+				<string>zipx</string>
+				<string>zi</string>
+			</array>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>LSHandlerRank</key>
@@ -46,6 +52,10 @@
 		<dict>
 			<key>CFBundleTypeName</key>
 			<string>RAR Archive</string>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>rar</string>
+			</array>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>LSHandlerRank</key>
@@ -59,6 +69,10 @@
 		<dict>
 			<key>CFBundleTypeName</key>
 			<string>7z Archive</string>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>7z</string>
+			</array>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>LSHandlerRank</key>
@@ -71,6 +85,12 @@
 		<dict>
 			<key>CFBundleTypeName</key>
 			<string>TAR Archive</string>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>tar</string>
+				<string>tgz</string>
+				<string>gz</string>
+			</array>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>LSHandlerRank</key>

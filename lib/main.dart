@@ -160,20 +160,61 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   }
 
   void _initDeepLinks() {
-    // Handle deep links (macOS file opening)
-    _appLinks.uriLinkStream.listen((uri) {
-      if (uri.scheme == 'file') {
-        String path = uri.toFilePath();
-        debugPrint("Received file open request: $path");
-        // Ensure path exists and we are mounted
-        if (mounted) {
-           // Decode URL encoded characters if necessary, but toFilePath usually handles it
-           _navigateTo(path);
-        }
-      }
-    }, onError: (err) {
+    // Handle deep links / file open requests (macOS)
+    _appLinks.uriLinkStream.listen(_handleIncomingUri, onError: (err) {
       debugPrint('Deep link error: $err');
     });
+    _appLinks.stringLinkStream.listen((link) {
+      _handleIncomingString(link);
+    }, onError: (err) {
+      debugPrint('Deep link string error: $err');
+    });
+
+    // Also handle the initial link when the app is cold-started from a file open
+    _appLinks.getInitialLink().then((uri) {
+      if (!mounted || uri == null) return;
+      _handleIncomingUri(uri);
+    }).catchError((err) {
+      debugPrint('Initial link error: $err');
+    });
+    _appLinks.getInitialLinkString().then((link) {
+      if (!mounted || link == null) return;
+      _handleIncomingString(link);
+    }).catchError((err) {
+      debugPrint('Initial link string error: $err');
+    });
+  }
+
+  void _handleIncomingUri(Uri uri) {
+    if (!mounted) return;
+
+    // Prefer file:// URIs for macOS "open with" flows
+    if (uri.scheme == 'file') {
+      final path = uri.toFilePath();
+      if (path.isNotEmpty) {
+        _navigateTo(path);
+      }
+      return;
+    }
+
+    // Fallback: treat plain paths (no scheme) as file paths
+    if (uri.scheme.isEmpty && uri.toString().isNotEmpty) {
+      _navigateTo(uri.toString());
+    }
+  }
+
+  void _handleIncomingString(String link) {
+    if (!mounted || link.isEmpty) return;
+    try {
+      final uri = Uri.parse(link);
+      if (uri.scheme.isNotEmpty) {
+        _handleIncomingUri(uri);
+        return;
+      }
+    } catch (_) {
+      // Not a URI, treat as path
+    }
+    _navigateTo(link);
   }
   
   void _processArgs() {
@@ -398,6 +439,9 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   bool _isArchive(String path) {
     final ext = p.extension(path).toLowerCase();
     return ext == '.zip' ||
+        ext == '.zipx' ||
+        ext == '.7z' ||
+        ext == '.zi' || // some systems truncate .zip to .zi on open-with
         ext == '.tar' ||
         ext == '.tgz' ||
         ext == '.gz' ||
