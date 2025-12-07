@@ -206,7 +206,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
   Future<void> _check7zAvailability() async {
     // 1. Try to setup bundled 7z
-    if (Platform.isLinux) {
+    if (Platform.isLinux || Platform.isMacOS) {
       try {
         final appDir = await getApplicationSupportDirectory();
         final bundledPath = p.join(appDir.path, '7z');
@@ -215,8 +215,14 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         // Check if we need to copy (if not exists or old?)
         if (!bundledFile.existsSync()) {
           try {
-            // Note: 'assets/bin/linux/7z' must be declared in pubspec.yaml
-            final byteData = await rootBundle.load('assets/bin/linux/7z');
+            // Determine asset path based on platform
+            String assetPath = 'assets/bin/linux/7z';
+            if (Platform.isMacOS) {
+              assetPath = 'assets/bin/macos/7z';
+            }
+
+            // Note: 'assets/bin/linux/7z' and 'assets/bin/macos/7z' must be declared in pubspec.yaml
+            final byteData = await rootBundle.load(assetPath);
             final buffer = byteData.buffer.asUint8List();
             
             if (!appDir.existsSync()) {
