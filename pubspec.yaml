@@ -43,6 +43,7 @@ dependencies:
   super_drag_and_drop: ^0.9.1
   open_filex: ^4.7.0
   super_native_extensions: ^0.9.1
+  path_provider: ^2.1.5
 
 dev_dependencies:
   flutter_test:
@@ -74,6 +75,7 @@ flutter:
 
   assets:
     - assets/icon.png
+    - assets/bin/linux/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

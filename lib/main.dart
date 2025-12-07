@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:isolate';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:file_picker/file_picker.dart';
 import 'package:archive/archive_io.dart';
 import 'package:path/path.dart' as p;
@@ -8,12 +9,16 @@ import 'package:intl/intl.dart';
 import 'package:filesize/filesize.dart';
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:path_provider/path_provider.dart';
 import 'worker.dart';
 
 void main(List<String> args) {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(WinRARApp(args: args));
 }
+
+// Global path to 7z executable (defaults to system '7z', updated if bundled is found)
+String _7zExecutable = '7z';
 
 class IconHelper {
   static IconData getIcon(String path, bool isDirectory) {
@@ -199,12 +204,58 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     }
   }
 
-  Future<void> _checkUnrarAvailability() async {
+  Future<void> _check7zAvailability() async {
+    // 1. Try to setup bundled 7z
+    if (Platform.isLinux) {
+      try {
+        final appDir = await getApplicationSupportDirectory();
+        final bundledPath = p.join(appDir.path, '7z');
+        final bundledFile = File(bundledPath);
+
+        // Check if we need to copy (if not exists or old?)
+        if (!bundledFile.existsSync()) {
+          try {
+            // Note: 'assets/bin/linux/7z' must be declared in pubspec.yaml
+            final byteData = await rootBundle.load('assets/bin/linux/7z');
+            final buffer = byteData.buffer.asUint8List();
+            
+            if (!appDir.existsSync()) {
+              appDir.createSync(recursive: true);
+            }
+            
+            await bundledFile.writeAsBytes(buffer);
+            
+            // chmod +x
+            await Process.run('chmod', ['+x', bundledPath]);
+          } catch (e) {
+            debugPrint("Failed to unpack bundled 7z: $e");
+          }
+        }
+
+        if (bundledFile.existsSync()) {
+           // Test it (simple info command)
+           final result = await Process.run(bundledPath, ['i']); 
+           // 7z usually returns 0 on success, but sometimes depends on args. 'i' works.
+           if (result.exitCode == 0 || result.exitCode == 255) {
+              setState(() {
+                _is7zAvailable = true;
+                _7zExecutable = bundledPath;
+              });
+              return;
+           }
+        }
+      } catch (e) {
+        debugPrint("Error checking bundled 7z: $e");
+      }
+    }
+
+    // 2. Fallback to system 7z
     try {
-      final result = await Process.run('which', ['unrar']);
+      final result = await Process.run('which', ['7z']);
       if (result.exitCode == 0) {
         setState(() {
-          _isUnrarAvailable = true;
+          _is7zAvailable = true;
+          _7zExecutable = '7z';
         });
       }
     } catch (e) {
@@ -212,12 +263,12 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     }
   }
 
-  Future<void> _check7zAvailability() async {
+  Future<void> _checkUnrarAvailability() async {
     try {
-      final result = await Process.run('which', ['7z']);
+      final result = await Process.run('which', ['unrar']);
       if (result.exitCode == 0) {
         setState(() {
-          _is7zAvailable = true;
+          _isUnrarAvailable = true;
         });
       }
     } catch (e) {
@@ -1597,19 +1648,31 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
   
 
-      try {
+          try {
 
-        // 7z u <archive_name> <files...>
+  
 
-        final args = ['u', _archivePath!, ...files];
+            // 7z u <archive_name> <files...>
 
-        
+  
 
-        final result = await Process.run('7z', args);
+            final args = ['u', _archivePath!, ...files];
 
-        
+  
 
-        if (mounted) Navigator.pop(context); // Close loading
+            
+
+  
+
+            final result = await Process.run(_7zExecutable, args);
+
+  
+
+            
+
+  
+
+            if (mounted) Navigator.pop(context); // Close loading
 
   
 
@@ -1695,19 +1758,31 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
   
 
-      try {
+          try {
 
-         // Prefer 7z if available
+  
 
-         if (_is7zAvailable) {
+             // Prefer 7z if available
 
-            final args = ['a', outputFile, ...files];
+  
 
-            await Process.run('7z', args);
+             if (_is7zAvailable) {
 
-         } else {
+  
 
-            // Fallback to Dart archive
+                final args = ['a', outputFile, ...files];
+
+  
+
+                await Process.run(_7zExecutable, args);
+
+  
+
+             } else {
+
+  
+
+                // Fallback to Dart archive
 
             final encoder = ZipFileEncoder();
 
