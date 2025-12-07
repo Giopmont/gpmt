@@ -134,12 +134,14 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   Directory? _sessionTempDir;
 
   bool _isUnrarAvailable = false;
+  bool _is7zAvailable = false;
 
   @override
   void initState() {
     super.initState();
     _createSessionTempDir();
     _checkUnrarAvailability();
+    _check7zAvailability();
     _refreshFiles();
   }
   
@@ -157,6 +159,19 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       if (result.exitCode == 0) {
         setState(() {
           _isUnrarAvailable = true;
+        });
+      }
+    } catch (e) {
+      // Silent error
+    }
+  }
+
+  Future<void> _check7zAvailability() async {
+    try {
+      final result = await Process.run('which', ['7z']);
+      if (result.exitCode == 0) {
+        setState(() {
+          _is7zAvailable = true;
         });
       }
     } catch (e) {
@@ -453,8 +468,10 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       }
     }
 
+    if (sourceArchive == null) return;
+
     // Extraction Dialog
-    String defaultName = p.basenameWithoutExtension(sourceArchive!);
+    String defaultName = p.basenameWithoutExtension(sourceArchive);
     String parentDir = p.dirname(sourceArchive);
     String defaultDest = p.join(parentDir, defaultName);
     
@@ -603,6 +620,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       destinationPath: outputDir,
       selectedFiles: (_isViewingArchive && _selectedPaths.isNotEmpty) ? _selectedPaths.toList() : [],
       overwrite: overwriteChoice,
+      useSystem7z: _is7zAvailable,
+      flatten: false,
       sendPort: receivePort.sendPort,
     );
 
@@ -747,6 +766,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   }
 
   Future<String?> _extractFileForDrag(dynamic entry) async {
+    if (_archivePath == null) return null;
+
     try {
       // Use session temp dir if available, else fallback to new temp
       final tempDir = _sessionTempDir ?? Directory.systemTemp.createTempSync('winrar_drag_');
@@ -771,6 +792,12 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           return destPath;
         }
 
+        if (mounted) {
+           ScaffoldMessenger.of(context).showSnackBar(
+             const SnackBar(content: Text('Preparing drag...'), duration: Duration(milliseconds: 500)),
+           );
+        }
+
         // Use Isolate for extraction to avoid freeze/crash on large files
         final receivePort = ReceivePort();
         final task = ExtractTask(
@@ -778,6 +805,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           destinationPath: tempDir.path,
           selectedFiles: [name], // Extract only this file
           overwrite: true,
+          useSystem7z: _is7zAvailable,
+          flatten: true,
           sendPort: receivePort.sendPort,
         );
         
@@ -811,6 +840,12 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         if (destFile.existsSync()) {
           return destPath;
         }
+
+        if (mounted) {
+           ScaffoldMessenger.of(context).showSnackBar(
+             const SnackBar(content: Text('Preparing drag...'), duration: Duration(milliseconds: 500)),
+           );
+        }
         
         final args = ['e', '-y', _archivePath!, name, tempDir.path];
         final result = await Process.run('unrar', args);
@@ -825,6 +860,202 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       // Silent error
     }
     return null;
+  }
+
+  void _showWizard() {
+    showDialog(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('WinRAR Wizard'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () {
+              Navigator.pop(context);
+              _extractSelected();
+            },
+            child: const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8.0),
+              child: Row(
+                children: [
+                  Icon(Icons.unarchive, color: Colors.blue),
+                  SizedBox(width: 12),
+                  Text('Unpack an archive'),
+                ],
+              ),
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () {
+              Navigator.pop(context);
+              _addToArchive();
+            },
+            child: const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8.0),
+              child: Row(
+                children: [
+                  Icon(Icons.archive, color: Colors.green),
+                  SizedBox(width: 12),
+                  Text('Create a new archive'),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showInfo() {
+    String title = "Information";
+    List<Widget> details = [];
+
+    if (_selectedPaths.isEmpty) {
+      // Show info about current directory/archive
+      title = _isViewingArchive ? "Archive Information" : "Folder Information";
+      details.add(Text("Path: ${_isViewingArchive ? _archivePath : _currentPath}"));
+      details.add(const SizedBox(height: 8));
+      
+      int count = _isViewingArchive ? _currentArchiveEntries.length : _files.length;
+      details.add(Text("Contains: $count items"));
+      
+      // Calculate total size if possible (simple sum)
+      int totalSize = 0;
+      if (_isViewingArchive) {
+         for (var e in _currentArchiveEntries) {
+           if (e is ArchiveFile) totalSize += e.size;
+           if (e is RarEntry) totalSize += e.size;
+         }
+         details.add(Text("Total Packed Size: ${filesize(totalSize)}"));
+      }
+    } else {
+      // Show info about selection
+      title = "Selection Details";
+      details.add(Text("Selected: ${_selectedPaths.length} items"));
+      details.add(const Divider());
+      
+      if (_selectedPaths.length == 1) {
+        String path = _selectedPaths.first;
+        details.add(Text("Name: ${p.basename(path)}"));
+        
+        if (!_isViewingArchive) {
+          try {
+             final stat = File(path).statSync();
+             details.add(Text("Size: ${filesize(stat.size)}"));
+             details.add(Text("Modified: ${DateFormat('yyyy-MM-dd HH:mm').format(stat.modified)}"));
+             details.add(Text("Permissions: ${stat.modeString()}"));
+          } catch (e) {
+             details.add(const Text("Could not read file stats."));
+          }
+        } else {
+          // Find entry in archive list
+          var entry = _currentArchiveEntries.firstWhere((e) {
+             if (e is ArchiveFile) return e.name == path;
+             if (e is RarEntry) return e.name == path;
+             return false;
+          }, orElse: () => null);
+          
+          if (entry != null) {
+             if (entry is ArchiveFile) details.add(Text("Size: ${filesize(entry.size)}"));
+             if (entry is RarEntry) details.add(Text("Size: ${filesize(entry.size)}"));
+          }
+        }
+      } else {
+        // Multiple items
+        details.add(const Text("Multiple items selected."));
+      }
+    }
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: details,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Close")),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showRepair() async {
+    if (_selectedPaths.isEmpty || _selectedPaths.length > 1) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select a single archive to repair.')),
+      );
+      return;
+    }
+
+    String path = _selectedPaths.first;
+    String ext = p.extension(path).toLowerCase();
+
+    if (ext != '.rar' && ext != '.zip') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Repair is only supported for RAR and ZIP archives.')),
+      );
+      return;
+    }
+
+    // Confirmation
+    bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Repair Archive"),
+        content: Text("Attempt to repair '$path'?\nThis will create a fixed copy."),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancel")),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("Repair")),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    if (ext == '.rar') {
+      if (!_isUnrarAvailable) {
+        if (mounted) {
+           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('unrar not found.')));
+        }
+        return;
+      }
+      
+      // unrar r <archive> <path_to_save_fixed>
+      // unrar usually fixes in place or creates 'fixed.arcname.rar'
+      try {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Attempting repair...')));
+        }
+        final result = await Process.run('unrar', ['r', path]);
+        if (mounted) {
+          if (result.exitCode == 0) {
+             _showInfoDialog("Repair Complete", "Output:\n${result.stdout}");
+          } else {
+             _showInfoDialog("Repair Failed", "Error:\n${result.stderr}");
+          }
+        }
+      } catch (e) {
+        if (mounted) _showInfoDialog("Error", e.toString());
+      }
+    } else {
+      // Zip repair logic (generic placeholder or basic zip -F if available)
+      if (mounted) {
+         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Zip repair not fully implemented yet.')));
+      }
+    }
+  }
+
+  void _showInfoDialog(String title, String content) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: SingleChildScrollView(child: Text(content)),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK"))],
+      ),
+    );
   }
 
   void _performDelete() {
@@ -902,9 +1133,9 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             _toolbarButton(Icons.remove_red_eye_outlined, "View", () {}),
             _toolbarButton(Icons.delete_outline, "Delete", _deleteSelected),
             _toolbarButton(Icons.search, "Find", () {}),
-            _toolbarButton(Icons.auto_fix_high, "Wizard", () {}),
-            _toolbarButton(Icons.info_outline, "Info", () {}),
-            _toolbarButton(Icons.build_circle_outlined, "Repair", () {}),
+            _toolbarButton(Icons.auto_fix_high, "Wizard", _showWizard),
+            _toolbarButton(Icons.info_outline, "Info", _showInfo),
+            _toolbarButton(Icons.build_circle_outlined, "Repair", _showRepair),
           ],
         ),
       ),

@@ -9,6 +9,8 @@ class ExtractTask {
   final String destinationPath;
   final List<String> selectedFiles;
   final bool overwrite;
+  final bool useSystem7z;
+  final bool flatten;
   final SendPort? sendPort;
 
   ExtractTask({
@@ -16,22 +18,15 @@ class ExtractTask {
     required this.destinationPath,
     required this.selectedFiles,
     required this.overwrite,
+    this.useSystem7z = false,
+    this.flatten = false,
     this.sendPort,
   });
 }
 
 // Changed to return 'void' instead of 'Future<void>' to satisfy Isolate.spawn signature
 void extractWorker(ExtractTask task) async {
-  // Try using system 7z first for performance and large file support (Zip64)
-  bool has7z = false;
-  try {
-    final result = await Process.run('which', ['7z']);
-    has7z = result.exitCode == 0;
-  } catch (e) {
-    has7z = false;
-  }
-
-  if (has7z) {
+  if (task.useSystem7z) {
     try {
       await _extractWith7z(task);
       return;
@@ -68,7 +63,7 @@ void extractWorker(ExtractTask task) async {
         if (!task.selectedFiles.contains(file.name)) continue;
       }
 
-      final filename = file.name;
+      final filename = task.flatten ? p.basename(file.name) : file.name;
       final destPath = p.join(task.destinationPath, filename);
       
       if (task.sendPort != null) {
@@ -97,7 +92,9 @@ void extractWorker(ExtractTask task) async {
           outputStream.close();
         }
       } else {
-        Directory(destPath).createSync(recursive: true);
+        if (!task.flatten) {
+          Directory(destPath).createSync(recursive: true);
+        }
       }
       processedCount++;
     }
@@ -115,7 +112,9 @@ void extractWorker(ExtractTask task) async {
 }
 
 Future<void> _extractWith7z(ExtractTask task) async {
-  final args = ['x', task.sourcePath, '-o${task.destinationPath}'];
+  // Use 'e' (extract here) if flatten is true, otherwise 'x' (extract with full paths)
+  final command = task.flatten ? 'e' : 'x';
+  final args = [command, task.sourcePath, '-o${task.destinationPath}'];
   
   // Overwrite mode
   if (task.overwrite) {
@@ -129,14 +128,10 @@ Future<void> _extractWith7z(ExtractTask task) async {
     args.addAll(task.selectedFiles);
   }
 
-  // Use -bsp1 for progress info if available, but standard output parsing is safer for generic 7z
-  // args.add('-bsp1'); 
-  
   // Start process
   final process = await Process.start('7z', args);
   
   // Parse stdout for progress
-  // 7z output example: "Extracting  Folder/File.ext"
   process.stdout
       .transform(utf8.decoder)
       .transform(const LineSplitter())
@@ -147,8 +142,8 @@ Future<void> _extractWith7z(ExtractTask task) async {
         task.sendPort!.send({
           'type': 'progress',
           'filename': filename,
-          'current': 0, // 7z doesn't give easy file count in this mode without pre-listing
-          'total': 0    // indeterminate
+          'current': 0, 
+          'total': 0    
         });
       }
     }
