@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'dart:isolate';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:archive/archive_io.dart';
 import 'package:path/path.dart' as p;
@@ -127,7 +127,7 @@ class RarEntry {
 }
 
 class _WinRARMainScreenState extends State<WinRARMainScreen> {
-  String _currentPath = Directory.current.path;
+  late String _currentPath;
   List<FileSystemEntity> _files = [];
   final Set<String> _selectedPaths = {};
 
@@ -142,23 +142,48 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
   bool _isUnrarAvailable = false;
   bool _is7zAvailable = false;
-  final _appLinks = AppLinks();
+  // final _appLinks = AppLinks(); // DISABLED - using native AppDelegate instead
+  static const _fileHandlerChannel = MethodChannel('com.gpmt/file_handler');
 
   @override
   void initState() {
     super.initState();
+
+    // Initialize _currentPath to user's home directory, not Directory.current
+    // Directory.current can be "/" on macOS when opened via Finder
+    _currentPath = Platform.environment['HOME'] ?? Directory.current.path;
+    debugPrint('Initial _currentPath: $_currentPath');
+
     _createSessionTempDir();
     _checkUnrarAvailability();
     _check7zAvailability();
     _refreshFiles();
-    _initDeepLinks();
-    
+    // _initDeepLinks(); // DISABLED - using native AppDelegate instead
+    _setupFileHandlerChannel();
+
     // Handle Command Line Arguments (Linux/Windows style)
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _processArgs();
     });
   }
 
+  void _setupFileHandlerChannel() {
+    debugPrint('Setting up file handler channel');
+    _fileHandlerChannel.setMethodCallHandler((call) async {
+      debugPrint('=== File Handler Channel ===');
+      debugPrint('Method: ${call.method}');
+      debugPrint('Arguments: ${call.arguments}');
+
+      if (call.method == 'openFile') {
+        final filePath = call.arguments as String;
+        debugPrint('Opening file from native: $filePath');
+        _navigateTo(filePath);
+      }
+    });
+  }
+
+  // DISABLED - Using native AppDelegate instead of app_links package
+  /*
   void _initDeepLinks() {
     // Handle deep links / file open requests (macOS)
     _appLinks.uriLinkStream.listen(_handleIncomingUri, onError: (err) {
@@ -186,11 +211,16 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   }
 
   void _handleIncomingUri(Uri uri) {
+    debugPrint('=== GPMT Deep Link URI ===');
+    debugPrint('URI: $uri');
+    debugPrint('Scheme: ${uri.scheme}');
+
     if (!mounted) return;
 
     // Prefer file:// URIs for macOS "open with" flows
     if (uri.scheme == 'file') {
       final path = uri.toFilePath();
+      debugPrint('File path: $path');
       if (path.isNotEmpty) {
         _navigateTo(path);
       }
@@ -199,11 +229,15 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
     // Fallback: treat plain paths (no scheme) as file paths
     if (uri.scheme.isEmpty && uri.toString().isNotEmpty) {
+      debugPrint('Plain path: ${uri.toString()}');
       _navigateTo(uri.toString());
     }
   }
 
   void _handleIncomingString(String link) {
+    debugPrint('=== GPMT Deep Link String ===');
+    debugPrint('Link: $link');
+
     if (!mounted || link.isEmpty) return;
     try {
       final uri = Uri.parse(link);
@@ -214,45 +248,49 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     } catch (_) {
       // Not a URI, treat as path
     }
+    debugPrint('Treating as direct path: $link');
     _navigateTo(link);
   }
+  */
   
   void _processArgs() {
-    if (widget.args.isEmpty) return;
-    
-    // Simple parser: 
+    debugPrint('=== GPMT Args Debug ===');
+    debugPrint('Args count: ${widget.args.length}');
+    debugPrint('Args: ${widget.args}');
+    debugPrint('Current directory: ${Directory.current.path}');
+
+    if (widget.args.isEmpty) {
+      debugPrint('No args received - relying on deep links');
+      return;
+    }
+
+    // Simple parser:
     // gpmt <file> -> Open
     // gpmt --extract <file> -> Extract dialog
-    
+
     String? targetFile;
     bool extractMode = false;
-    
+
     for (int i = 0; i < widget.args.length; i++) {
       final arg = widget.args[i];
+      debugPrint('Processing arg[$i]: $arg');
       if (arg == '--extract' || arg == '-e') {
         extractMode = true;
       } else if (!arg.startsWith('-')) {
         targetFile = arg;
       }
     }
-    
-    if (targetFile != null) {
+
+    debugPrint('Target file: $targetFile');
+
+    if (targetFile != null && targetFile.isNotEmpty) {
+      // Just navigate to the file/directory - _navigateTo will handle it correctly
+      debugPrint('Navigating to: $targetFile');
+      _navigateTo(targetFile);
+
       if (extractMode) {
-        // Since we need to open the archive first to extract from it in the UI logic,
-        // we can navigate to it and then trigger extraction.
-        // For simplicity, let's just open it for now, 
-        // implementing auto-extraction popup requires refactoring _extractSelected to accept args.
-        _navigateTo(targetFile);
-        
         // Future improvement: Trigger extraction dialog automatically
         // Future.delayed(Duration(seconds: 1), () => _extractSelected());
-      } else {
-        // Just open/navigate
-        if (FileSystemEntity.isDirectorySync(targetFile)) {
-          _navigateTo(targetFile);
-        } else if (_isArchive(targetFile)) {
-          _navigateTo(targetFile);
-        }
       }
     }
   }
@@ -398,14 +436,22 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   }
 
   void _navigateTo(String path) {
+    debugPrint('=== _navigateTo called ===');
+    debugPrint('Path: $path');
+    debugPrint('Is archive: ${_isArchive(path)}');
+
     // Check if it's a supported archive
     if (_isArchive(path)) {
+      debugPrint('Opening as archive');
       _openArchive(path);
       return;
     }
 
     final dir = Directory(path);
-    if (dir.existsSync()) {
+    final exists = dir.existsSync();
+    debugPrint('Directory exists: $exists');
+
+    if (exists) {
       setState(() {
         _currentPath = path;
         _isViewingArchive = false;
@@ -414,6 +460,14 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         _currentArchiveEntries = []; // Use _currentArchiveEntries here too
       });
       _refreshFiles();
+    } else {
+      debugPrint('Path does not exist as directory, checking if file...');
+      final file = File(path);
+      if (file.existsSync()) {
+        debugPrint('File exists but not recognized as archive');
+      } else {
+        debugPrint('Path does not exist: $path');
+      }
     }
   }
 
