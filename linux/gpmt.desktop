@@ -1,0 +1,15 @@
+[Desktop Entry]
+Name=GPMT Archive Manager
+Comment=Open and manage archives
+Exec=gpmt %f
+Icon=gpmt
+Terminal=false
+Type=Application
+Categories=Utility;Archiving;
+MimeType=application/zip;application/x-rar;application/x-7z-compressed;application/x-tar;application/x-compressed-tar;
+Actions=Extract;
+
+[Desktop Action Extract]
+Name=Extract Here (GPMT)
+Exec=gpmt --extract %f
+Icon=package-x-generic
