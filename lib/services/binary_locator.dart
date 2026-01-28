@@ -69,17 +69,30 @@ class BinaryLocator {
       }
     }
 
-    // Fallback para sistema
-    try {
-      final result = await Process.run('which', ['7z']);
-      if (result.exitCode == 0) {
-        _is7zAvailable = true;
-        _sevenZipExecutable = '7z';
-        debugPrint('7z encontrado (sistema)');
+    // Fallback para sistema - tentar múltiplos caminhos
+    final systemPaths = [
+      '/opt/homebrew/bin/7z',
+      '/opt/homebrew/bin/7za',
+      '/usr/local/bin/7z',
+      '/usr/local/bin/7za',
+      '7z',
+      '7za',
+    ];
+
+    for (final path in systemPaths) {
+      try {
+        final result = await Process.run(path, ['i']);
+        if (result.exitCode == 0 || result.exitCode == 255) {
+          _is7zAvailable = true;
+          _sevenZipExecutable = path;
+          debugPrint('7z encontrado (sistema): $path');
+          return;
+        }
+      } catch (e) {
+        // Tentar próximo caminho
       }
-    } catch (e) {
-      debugPrint('7z não encontrado no sistema');
     }
+    debugPrint('7z não encontrado no sistema');
   }
 
   /// Verifica disponibilidade do unrar (bundled ou sistema).

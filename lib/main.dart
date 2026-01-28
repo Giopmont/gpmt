@@ -2272,8 +2272,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         args.addAll(files);
         result = await Process.run(_binaryLocator.rarExecutable, args);
       } else {
-        // For 7z, we need to create a temporary directory structure
-        // that mirrors the destination path and copy files there first
+        // For 7z/zip: Add files to archive
+        // p7zip doesn't support -ep1, so we handle paths differently
         if (_archiveVirtualPath.isNotEmpty) {
           // Create temp dir with the destination structure
           final tempDir = await Directory.systemTemp.createTemp('gpmt_add_');
@@ -2291,7 +2291,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             }
 
             // Add the structured temp dir to archive
-            final args = ['u', _archivePath!, '-r', '${tempDir.path}/*'];
+            // Use 'a' (add) with relative paths from temp dir
+            final args = ['a', _archivePath!, '.'];
             result = await Process.run(
               _binaryLocator.sevenZipExecutable,
               args,
@@ -2305,9 +2306,21 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             rethrow;
           }
         } else {
-          // Root level - simple add
-          final args = ['u', '-ep1', _archivePath!, ...files];
-          result = await Process.run(_binaryLocator.sevenZipExecutable, args);
+          // Root level - add files directly using their basenames
+          // We need to be in the directory of the files to avoid full paths
+          if (files.isNotEmpty) {
+            final firstFile = File(files.first);
+            final workDir = firstFile.parent.path;
+            final basenames = files.map((f) => p.basename(f)).toList();
+            final args = ['a', _archivePath!, ...basenames];
+            result = await Process.run(
+              _binaryLocator.sevenZipExecutable,
+              args,
+              workingDirectory: workDir,
+            );
+          } else {
+            result = ProcessResult(0, 0, '', 'No files to add');
+          }
         }
       }
 
