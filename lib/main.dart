@@ -18,7 +18,7 @@ void main(List<String> args) {
 }
 
 // Global path to 7z executable (defaults to system '7z', updated if bundled is found)
-String _7zExecutable = '7z';
+String _sevenZipExecutable = '7z';
 String _unrarExecutable = 'unrar';
 
 class IconHelper {
@@ -117,12 +117,14 @@ class RarEntry {
   final String name;
   final int size;
   final DateTime? dateModified;
+  final DateTime? dateCreated;
   final bool isDirectory;
 
   RarEntry({
     required this.name,
     required this.size,
     this.dateModified,
+    this.dateCreated,
     this.isDirectory = false,
   });
 }
@@ -141,6 +143,10 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   // Temp dir for drag-and-drop cache
   Directory? _sessionTempDir;
 
+  // Sorting
+  int _sortColumn = 0; // 0=Name, 1=Created, 2=Modified, 3=Type, 4=Size
+  bool _sortAscending = true;
+
   bool _isUnrarAvailable = false;
   bool _is7zAvailable = false;
   // final _appLinks = AppLinks(); // DISABLED - using native AppDelegate instead
@@ -150,22 +156,29 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   void initState() {
     super.initState();
 
-    // Initialize _currentPath to user's home directory, not Directory.current
-    // Directory.current can be "/" on macOS when opened via Finder
+    // Initialize _currentPath to user's home directory
     _currentPath = Platform.environment['HOME'] ?? Directory.current.path;
     debugPrint('Initial _currentPath: $_currentPath');
+    debugPrint(
+        'GPMT Version: 1.0.2 (Race Fix) - Build Time: ${DateTime.now()}');
 
     _createSessionTempDir();
-    _checkUnrarAvailability();
-    _check7zAvailability();
     _refreshFiles();
-    // _initDeepLinks(); // DISABLED - using native AppDelegate instead
     _setupFileHandlerChannel();
 
-    // Handle Command Line Arguments (Linux/Windows style)
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    // Start initialization sequence
+    _initApp();
+  }
+
+  Future<void> _initApp() async {
+    // Check dependencies first
+    await _check7zAvailability();
+    await _checkUnrarAvailability();
+
+    // Then process arguments (file open requests)
+    if (mounted) {
       _processArgs();
-    });
+    }
   }
 
   void _setupFileHandlerChannel() {
@@ -345,7 +358,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           if (result.exitCode == 0 || result.exitCode == 255) {
             setState(() {
               _is7zAvailable = true;
-              _7zExecutable = bundledPath;
+              _sevenZipExecutable = bundledPath;
             });
             return;
           }
@@ -361,13 +374,15 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       if (result.exitCode == 0) {
         setState(() {
           _is7zAvailable = true;
-          _7zExecutable = '7z';
+          _sevenZipExecutable = '7z';
         });
       }
     } catch (e) {
       // Silent error
     }
   }
+
+  String _unrarErrorDetails = '';
 
   Future<void> _checkUnrarAvailability() async {
     // 1. Try to setup bundled unrar
@@ -377,8 +392,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         final bundledPath = p.join(appDir.path, 'unrar');
         final bundledFile = File(bundledPath);
 
-        // Check if we need to copy
-        if (!bundledFile.existsSync()) {
+        // Always attempt to copy if size is 0 or not exists
+        if (!bundledFile.existsSync() || bundledFile.lengthSync() == 0) {
           try {
             String assetPath = 'assets/bin/linux/unrar';
             if (Platform.isMacOS) {
@@ -395,6 +410,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             await bundledFile.writeAsBytes(buffer);
             await Process.run('chmod', ['+x', bundledPath]);
           } catch (e) {
+            _unrarErrorDetails = "Unpack failed: $e";
             debugPrint("Failed to unpack bundled unrar: $e");
           }
         }
@@ -403,6 +419,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           // Verify it runs
           try {
             final result = await Process.run(bundledPath, []);
+
             // unrar with no args prints help and usually returns 0 or 7 (user error).
             // We consider it valid if it produces output or returns typical exit codes.
             if (result.exitCode == 0 ||
@@ -411,14 +428,20 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
               setState(() {
                 _isUnrarAvailable = true;
                 _unrarExecutable = bundledPath;
+                _unrarErrorDetails = ''; // Clear error on success
               });
               return;
+            } else {
+              _unrarErrorDetails =
+                  "Execution check failed (Code ${result.exitCode}). Stderr: ${result.stderr}";
             }
           } catch (e) {
+            _unrarErrorDetails = "Execution exception: $e";
             debugPrint("Bundled unrar failed execution test: $e");
           }
         }
       } catch (e) {
+        _unrarErrorDetails = "General check error: $e";
         debugPrint("Error checking bundled unrar: $e");
       }
     }
@@ -429,11 +452,153 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         setState(() {
           _isUnrarAvailable = true;
           _unrarExecutable = 'unrar';
+          _unrarErrorDetails = '';
         });
+      } else {
+        if (_unrarErrorDetails.isEmpty) {
+          _unrarErrorDetails =
+              "System unrar not found (which unrar returned ${result.exitCode})";
+        }
       }
     } catch (e) {
-      // Silent error
+      if (_unrarErrorDetails.isEmpty) {
+        _unrarErrorDetails = "System check failed: $e";
+      }
     }
+  }
+
+  void _sortFiles() {
+    if (_isViewingArchive) {
+      _currentArchiveEntries.sort((a, b) {
+        // Always keep directories on top for Name sort, or mixed for others?
+        // Standard windows behavior: Folder always on top, then files.
+        // Let's implement generic compare first.
+
+        dynamic valA, valB;
+        bool isDirA = false, isDirB = false;
+
+        if (a is ArchiveFile) {
+          isDirA = !a.isFile;
+          valA = a.name; // Fallback
+        } else if (a is RarEntry) {
+          isDirA = a.isDirectory;
+          valA = a.name;
+        }
+
+        if (b is ArchiveFile) {
+          isDirB = !b.isFile;
+          valB = b.name;
+        } else if (b is RarEntry) {
+          isDirB = b.isDirectory;
+          valB = b.name;
+        }
+
+        // Folders always first?
+        if (isDirA && !isDirB) return -1;
+        if (!isDirA && isDirB) return 1;
+
+        // Now compare by column
+        int cmp = 0;
+        switch (_sortColumn) {
+          case 0: // Name
+            valA = (a is ArchiveFile) ? a.name : (a as RarEntry).name;
+            valB = (b is ArchiveFile) ? b.name : (b as RarEntry).name;
+            cmp = valA
+                .toString()
+                .toLowerCase()
+                .compareTo(valB.toString().toLowerCase());
+            break;
+          case 1: // Created
+            // ArchiveFile doesn't have created easily accessible here, treat as 0
+            DateTime? dtA, dtB;
+            if (a is RarEntry) dtA = a.dateCreated;
+            if (b is RarEntry) dtB = b.dateCreated;
+            // Default to epoch if null
+            dtA ??= DateTime.fromMillisecondsSinceEpoch(0);
+            dtB ??= DateTime.fromMillisecondsSinceEpoch(0);
+            cmp = dtA.compareTo(dtB);
+            break;
+          case 2: // Modified
+            DateTime? dtA, dtB;
+            if (a is RarEntry) dtA = a.dateModified;
+            // ArchiveFile lastModTime is int (seconds? DOS?)
+            // Let's assume standard unix for sorting logic simplicity or just use 0
+            // Fixing proper date parsing for ArchiveFile is logically separate
+            if (b is RarEntry) dtB = b.dateModified;
+            dtA ??= DateTime.fromMillisecondsSinceEpoch(0);
+            dtB ??= DateTime.fromMillisecondsSinceEpoch(0);
+            cmp = dtA.compareTo(dtB);
+            break;
+          case 3: // Type
+            String extA =
+                p.extension((a is ArchiveFile) ? a.name : (a as RarEntry).name);
+            String extB =
+                p.extension((b is ArchiveFile) ? b.name : (b as RarEntry).name);
+            cmp = extA.toLowerCase().compareTo(extB.toLowerCase());
+            break;
+          case 4: // Size
+            int sizeA = (a is ArchiveFile) ? a.size : (a as RarEntry).size;
+            int sizeB = (b is ArchiveFile) ? b.size : (b as RarEntry).size;
+            cmp = sizeA.compareTo(sizeB);
+            break;
+        }
+
+        return _sortAscending ? cmp : -cmp;
+      });
+    } else {
+      _files.sort((a, b) {
+        bool isDirA = a is Directory;
+        bool isDirB = b is Directory;
+
+        if (isDirA && !isDirB) return -1;
+        if (!isDirA && isDirB) return 1;
+
+        int cmp = 0;
+        switch (_sortColumn) {
+          case 0: // Name
+            cmp = a.path.toLowerCase().compareTo(b.path.toLowerCase());
+            break;
+          case 1: // Created (Changed)
+            try {
+              cmp = a.statSync().changed.compareTo(b.statSync().changed);
+            } catch (_) {
+              cmp = 0;
+            }
+            break;
+          case 2: // Modified
+            try {
+              cmp = a.statSync().modified.compareTo(b.statSync().modified);
+            } catch (_) {
+              cmp = 0;
+            }
+            break;
+          case 3: // Type
+            cmp = p
+                .extension(a.path)
+                .toLowerCase()
+                .compareTo(p.extension(b.path).toLowerCase());
+            break;
+          case 4: // Size
+            int sizeA = (a is File) ? a.statSync().size : 0;
+            int sizeB = (b is File) ? b.statSync().size : 0;
+            cmp = sizeA.compareTo(sizeB);
+            break;
+        }
+        return _sortAscending ? cmp : -cmp;
+      });
+    }
+  }
+
+  void _onColumnHeaderTap(int index) {
+    setState(() {
+      if (_sortColumn == index) {
+        _sortAscending = !_sortAscending;
+      } else {
+        _sortColumn = index;
+        _sortAscending = true;
+      }
+      _sortFiles();
+    });
   }
 
   @override
@@ -474,12 +639,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       if (dir.existsSync()) {
         final entities = dir.listSync();
         setState(() {
-          _files = entities
-            ..sort((a, b) {
-              if (a is Directory && b is! Directory) return -1;
-              if (a is! Directory && b is Directory) return 1;
-              return a.path.toLowerCase().compareTo(b.path.toLowerCase());
-            });
+          _files = entities;
+          _sortFiles();
           _selectedPaths.clear();
         });
       }
@@ -576,8 +737,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             context: context,
             builder: (ctx) => AlertDialog(
               title: const Text("Unrar Not Found"),
-              content: const Text(
-                  "To open RAR files, please install 'unrar' on your system."),
+              content: Text(
+                  "To open RAR files, please install 'unrar' on your system.\n\nDebug Info: $_unrarErrorDetails"),
               actions: [
                 TextButton(
                     onPressed: () => Navigator.pop(ctx),
@@ -931,7 +1092,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           : [],
       overwrite: overwriteChoice,
       useSystem7z: _is7zAvailable,
-      custom7zExecutable: _7zExecutable,
+      custom7zExecutable: _sevenZipExecutable,
       flatten: false,
       sendPort: receivePort.sendPort,
     );
@@ -1132,7 +1293,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           selectedFiles: [name], // Extract only this file
           overwrite: true,
           useSystem7z: _is7zAvailable,
-          custom7zExecutable: _7zExecutable,
+          custom7zExecutable: _sevenZipExecutable,
           flatten: true,
           sendPort: receivePort.sendPort,
         );
@@ -1564,76 +1725,428 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         color: Colors.white,
         child: Column(
           children: [
-            // Header
-
+            // DataTable with fixed header
             Container(
-              color: const Color(0xFFEEEEEE),
-              padding: const EdgeInsets.symmetric(vertical: 4),
-              child: const Row(
-                children: [
-                  SizedBox(width: 40), // Checkbox space
-
-                  Expanded(
-                      flex: 5,
-                      child: Text("Name",
-                          style: TextStyle(
-                              fontWeight: FontWeight.bold, fontSize: 13))),
-
-                  Expanded(
-                      flex: 2,
-                      child: Text("Size",
-                          style: TextStyle(
-                              fontWeight: FontWeight.bold, fontSize: 13))),
-
-                  Expanded(
-                      flex: 2,
-                      child: Text("Type",
-                          style: TextStyle(
-                              fontWeight: FontWeight.bold, fontSize: 13))),
-
-                  Expanded(
-                      flex: 3,
-                      child: Text("Modified",
-                          style: TextStyle(
-                              fontWeight: FontWeight.bold, fontSize: 13))),
-                ],
+              decoration: const BoxDecoration(
+                color: Color(0xFFF5F5F5),
+                border: Border(
+                  bottom: BorderSide(color: Color(0xFFCCCCCC), width: 1),
+                ),
               ),
+              child: _buildDataTableHeader(),
             ),
 
-            const Divider(height: 1),
-
-            // List
-
+            // Scrollable content
             Expanded(
-              child: _isViewingArchive
-                  ? ListView.builder(
-                      itemCount:
-                          _currentArchiveEntries.length + 1, // +1 for ".."
-
-                      itemBuilder: (context, index) {
-                        if (index == 0) return _buildParentDirItem();
-
-                        final entry = _currentArchiveEntries[index - 1];
-
-                        return _buildArchiveEntryItem(entry);
-                      },
-                    )
-                  : ListView.builder(
-                      itemCount: _files.length + 1, // +1 for ".."
-
-                      itemBuilder: (context, index) {
-                        if (index == 0) return _buildParentDirItem();
-
-                        final file = _files[index - 1];
-
-                        return _buildFileItem(file);
-                      },
-                    ),
+              child: SingleChildScrollView(
+                child: _buildDataTableBody(),
+              ),
             ),
           ],
         ),
       ),
     );
+  }
+
+  Widget _buildDataTableHeader() {
+    return Row(
+      children: [
+        _buildHeaderCell('Name', 0, flex: 4),
+        _buildHeaderCell('Created', 1, flex: 2),
+        _buildHeaderCell('Modified', 2, flex: 2),
+        _buildHeaderCell('Type', 3, flex: 2),
+        _buildHeaderCell('Size', 4, flex: 1, isLast: true),
+      ],
+    );
+  }
+
+  Widget _buildHeaderCell(String label, int columnIndex,
+      {required int flex, bool isLast = false}) {
+    final isActive = _sortColumn == columnIndex;
+    final arrow = isActive ? (_sortAscending ? ' ▲' : ' ▼') : '';
+
+    return Expanded(
+      flex: flex,
+      child: InkWell(
+        onTap: () => _onColumnHeaderTap(columnIndex),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+          decoration: BoxDecoration(
+            border: isLast
+                ? null
+                : const Border(
+                    right: BorderSide(color: Color(0xFFD0D0D0), width: 1),
+                  ),
+          ),
+          child: Text(
+            '$label$arrow',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 13,
+              color: isActive ? Colors.blue.shade800 : Colors.black87,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDataTableBody() {
+    final List<Widget> rows = [];
+
+    // Parent directory row ".."
+    rows.add(_buildDataRow(
+      icon: Icons.folder_open,
+      iconColor: Colors.amber,
+      name: '..',
+      created: '',
+      modified: '',
+      type: '',
+      size: '',
+      isSelected: false,
+      onTap: _navigateUp,
+      onDoubleTap: _navigateUp,
+      isEven: true,
+    ));
+
+    if (_isViewingArchive) {
+      for (int i = 0; i < _currentArchiveEntries.length; i++) {
+        final entry = _currentArchiveEntries[i];
+        rows.add(_buildArchiveEntryRow(entry, i));
+      }
+    } else {
+      for (int i = 0; i < _files.length; i++) {
+        final file = _files[i];
+        rows.add(_buildFileRow(file, i));
+      }
+    }
+
+    return Column(children: rows);
+  }
+
+  Widget _buildDataRow({
+    required IconData icon,
+    required Color iconColor,
+    required String name,
+    required String created,
+    required String modified,
+    required String type,
+    required String size,
+    required bool isSelected,
+    required VoidCallback onTap,
+    required VoidCallback onDoubleTap,
+    required bool isEven,
+    Widget? dragWrapper,
+  }) {
+    final rowContent = InkWell(
+      onTap: onTap,
+      onDoubleTap: onDoubleTap,
+      child: Container(
+        decoration: BoxDecoration(
+          color: isSelected
+              ? const Color(0xFFCCE8FF)
+              : (isEven ? Colors.white : const Color(0xFFFAFAFA)),
+          border: const Border(
+            bottom: BorderSide(color: Color(0xFFEEEEEE), width: 1),
+          ),
+        ),
+        child: Row(
+          children: [
+            // Name column with icon
+            Expanded(
+              flex: 4,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+                decoration: const BoxDecoration(
+                  border: Border(
+                    right: BorderSide(color: Color(0xFFE8E8E8), width: 1),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(icon, color: iconColor, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        name,
+                        style: const TextStyle(fontSize: 13),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            // Created column
+            Expanded(
+              flex: 2,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+                decoration: const BoxDecoration(
+                  border: Border(
+                    right: BorderSide(color: Color(0xFFE8E8E8), width: 1),
+                  ),
+                ),
+                child: Text(
+                  created,
+                  style: const TextStyle(fontSize: 12, color: Colors.black54),
+                ),
+              ),
+            ),
+            // Modified column
+            Expanded(
+              flex: 2,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+                decoration: const BoxDecoration(
+                  border: Border(
+                    right: BorderSide(color: Color(0xFFE8E8E8), width: 1),
+                  ),
+                ),
+                child: Text(
+                  modified,
+                  style: const TextStyle(fontSize: 12, color: Colors.black54),
+                ),
+              ),
+            ),
+            // Type column
+            Expanded(
+              flex: 2,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+                decoration: const BoxDecoration(
+                  border: Border(
+                    right: BorderSide(color: Color(0xFFE8E8E8), width: 1),
+                  ),
+                ),
+                child: Text(
+                  type,
+                  style: const TextStyle(fontSize: 12, color: Colors.black54),
+                ),
+              ),
+            ),
+            // Size column
+            Expanded(
+              flex: 1,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+                child: Text(
+                  size,
+                  style: const TextStyle(fontSize: 12, color: Colors.black87),
+                  textAlign: TextAlign.right,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    return dragWrapper ?? rowContent;
+  }
+
+  Widget _buildFileRow(FileSystemEntity file, int index) {
+    final name = p.basename(file.path);
+    final isSelected = _selectedPaths.contains(file.path);
+    final isDir = file is Directory;
+
+    String sizeStr = "";
+    String dateStr = "";
+    String createdStr = "";
+    String typeStr = "File";
+
+    try {
+      final stat = file.statSync();
+      dateStr = DateFormat('yyyy-MM-dd HH:mm').format(stat.modified);
+      createdStr = DateFormat('yyyy-MM-dd HH:mm').format(stat.changed);
+      if (file is File) {
+        sizeStr = filesize(stat.size);
+        final ext = p.extension(file.path);
+        if (ext.isNotEmpty) {
+          typeStr = "${ext.substring(1).toUpperCase()} File";
+        }
+      } else {
+        typeStr = "File Folder";
+      }
+    } catch (e) {
+      // Access error
+    }
+
+    final icon = IconHelper.getIcon(file.path, isDir);
+    final iconColor = IconHelper.getIconColor(file.path, isDir);
+
+    // Create the draggable wrapper
+    final dragWrapper = DragItemWidget(
+      dragItemProvider: (request) async {
+        final path = file.path;
+        final item = DragItem(localData: path);
+        item.add(Formats.fileUri(Uri.file(path)));
+        item.add(Formats.plainText(path));
+        return item;
+      },
+      allowedOperations: () => [DropOperation.copy],
+      liftBuilder: (context, child) {
+        return Material(
+          color: Colors.transparent,
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.9),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.blueAccent),
+              boxShadow: const [
+                BoxShadow(blurRadius: 5, color: Colors.black26)
+              ],
+            ),
+            padding: const EdgeInsets.all(8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, color: iconColor, size: 24),
+                const SizedBox(width: 8),
+                Text(name,
+                    style: const TextStyle(
+                        fontSize: 14, decoration: TextDecoration.none)),
+              ],
+            ),
+          ),
+        );
+      },
+      child: DraggableWidget(
+        child: _buildDataRow(
+          icon: icon,
+          iconColor: iconColor,
+          name: name,
+          created: createdStr,
+          modified: dateStr,
+          type: typeStr,
+          size: sizeStr,
+          isSelected: isSelected,
+          onTap: () => _toggleSelection(file.path),
+          onDoubleTap: () {
+            if (file is Directory) {
+              _navigateTo(file.path);
+            } else if (_isArchive(file.path)) {
+              _navigateTo(file.path);
+            } else {
+              OpenFilex.open(file.path);
+            }
+          },
+          isEven: index % 2 == 0,
+        ),
+      ),
+    );
+
+    return dragWrapper;
+  }
+
+  Widget _buildArchiveEntryRow(dynamic entry, int index) {
+    String name;
+    String sizeStr;
+    String typeStr;
+    String dateStr = "";
+    String createdStr = "";
+    bool isDir;
+    bool isSelected;
+
+    if (entry is ArchiveFile) {
+      name = entry.name;
+      isDir = !entry.isFile;
+      sizeStr = isDir ? "" : filesize(entry.size);
+      typeStr = isDir
+          ? "Folder"
+          : (p.extension(name).isEmpty
+              ? "File"
+              : "${p.extension(name).substring(1).toUpperCase()} File");
+      isSelected = _selectedPaths.contains(entry.name);
+    } else if (entry is RarEntry) {
+      name = entry.name;
+      isDir = entry.isDirectory;
+      sizeStr = isDir ? "" : filesize(entry.size);
+      typeStr = isDir
+          ? "Folder"
+          : (p.extension(name).isEmpty
+              ? "RAR File"
+              : "${p.extension(name).substring(1).toUpperCase()} File");
+      if (entry.dateModified != null) {
+        dateStr = DateFormat('yyyy-MM-dd HH:mm').format(entry.dateModified!);
+      }
+      if (entry.dateCreated != null) {
+        createdStr = DateFormat('yyyy-MM-dd HH:mm').format(entry.dateCreated!);
+      }
+      isSelected = _selectedPaths.contains(entry.name);
+    } else {
+      name = "Unknown";
+      sizeStr = "";
+      typeStr = "";
+      isDir = false;
+      isSelected = false;
+    }
+
+    final icon = IconHelper.getIcon(name, isDir);
+    final iconColor = IconHelper.getIconColor(name, isDir);
+
+    // Create the draggable wrapper for archive items
+    final dragWrapper = DragItemWidget(
+      dragItemProvider: (request) async {
+        final path = await _extractFileForDrag(entry);
+        if (path != null) {
+          final item = DragItem(localData: path);
+          item.add(Formats.fileUri(Uri.file(path)));
+          item.add(Formats.plainText(path));
+          return item;
+        }
+        return null;
+      },
+      allowedOperations: () => [DropOperation.copy],
+      liftBuilder: (context, child) {
+        return Material(
+          color: Colors.transparent,
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.9),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.purpleAccent),
+              boxShadow: const [
+                BoxShadow(blurRadius: 5, color: Colors.black26)
+              ],
+            ),
+            padding: const EdgeInsets.all(8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, color: iconColor, size: 24),
+                const SizedBox(width: 8),
+                Text(name,
+                    style: const TextStyle(
+                        fontSize: 14, decoration: TextDecoration.none)),
+              ],
+            ),
+          ),
+        );
+      },
+      child: DraggableWidget(
+        child: _buildDataRow(
+          icon: icon,
+          iconColor: iconColor,
+          name: name,
+          created: createdStr,
+          modified: dateStr,
+          type: typeStr,
+          size: sizeStr,
+          isSelected: isSelected,
+          onTap: () => _toggleSelection(name),
+          onDoubleTap: () {},
+          isEven: index % 2 == 0,
+        ),
+      ),
+    );
+
+    return dragWrapper;
   }
 
   Future<void> _handleDroppedFiles(PerformDropEvent event) async {
@@ -1752,7 +2265,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
       final args = ['u', _archivePath!, ...files];
 
-      final result = await Process.run(_7zExecutable, args);
+      final result = await Process.run(_sevenZipExecutable, args);
 
       if (mounted) Navigator.pop(context); // Close loading
 
@@ -1809,7 +2322,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       if (_is7zAvailable) {
         final args = ['a', outputFile, ...files];
 
-        await Process.run(_7zExecutable, args);
+        await Process.run(_sevenZipExecutable, args);
       } else {
         // Fallback to Dart archive
 
@@ -1866,242 +2379,6 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     }
 
     _refreshFiles();
-  }
-
-  Widget _buildParentDirItem() {
-    return InkWell(
-      onTap: _navigateUp,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 2),
-        child: Row(
-          children: [
-            const SizedBox(width: 40, child: Icon(Icons.folder_open, size: 18)),
-            const Expanded(
-                flex: 5, child: Text("..", style: TextStyle(fontSize: 13))),
-            Expanded(flex: 2, child: Container()),
-            Expanded(flex: 2, child: Container()),
-            Expanded(flex: 3, child: Container()),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildFileItem(FileSystemEntity file) {
-    final name = p.basename(file.path);
-    final isSelected = _selectedPaths.contains(file.path);
-    final isDir = file is Directory;
-
-    String sizeStr = "";
-    String dateStr = "";
-    String typeStr = "File";
-
-    try {
-      final stat = file.statSync();
-      dateStr = DateFormat('yyyy-MM-dd HH:mm').format(stat.modified);
-      if (file is File) {
-        sizeStr = filesize(stat.size);
-        typeStr =
-            "${p.extension(file.path).toUpperCase().replaceAll('.', '')} File";
-        if (typeStr.trim().isEmpty) typeStr = "File";
-      } else {
-        typeStr = "File Folder";
-      }
-    } catch (e) {
-      // Access error
-    }
-
-    final row = InkWell(
-      onTap: () => _toggleSelection(file.path),
-      onDoubleTap: () {
-        if (file is Directory) {
-          _navigateTo(file.path);
-        } else if (_isArchive(file.path)) {
-          _navigateTo(file.path);
-        } else {
-          OpenFilex.open(file.path);
-        }
-      },
-      child: Container(
-        color: isSelected
-            ? const Color(0xFFCCE8FF)
-            : null, // Windows Selection Blue
-        padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 4),
-        child: Row(
-          children: [
-            SizedBox(
-                width: 32,
-                child: Icon(IconHelper.getIcon(file.path, isDir),
-                    color: IconHelper.getIconColor(file.path, isDir),
-                    size: 20)),
-            Expanded(
-                flex: 5,
-                child: Text(name,
-                    style: const TextStyle(fontSize: 13),
-                    overflow: TextOverflow.ellipsis)),
-            Expanded(
-                flex: 2,
-                child: Text(sizeStr, style: const TextStyle(fontSize: 13))),
-            Expanded(
-                flex: 2,
-                child: Text(typeStr, style: const TextStyle(fontSize: 13))),
-            Expanded(
-                flex: 3,
-                child: Text(dateStr, style: const TextStyle(fontSize: 13))),
-          ],
-        ),
-      ),
-    );
-
-    // Draggable Wrapper
-    return DragItemWidget(
-      dragItemProvider: (request) async {
-        final path = file.path;
-        final item = DragItem(
-          localData: path,
-        );
-        item.add(Formats.fileUri(Uri.file(path)));
-        item.add(Formats.plainText(path));
-        return item;
-      },
-      allowedOperations: () => [DropOperation.copy],
-      // Custom Drag Image
-      liftBuilder: (context, child) {
-        return Material(
-          color: Colors.transparent,
-          child: Container(
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.8), // Transparent white
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.blueAccent),
-              boxShadow: const [
-                BoxShadow(blurRadius: 5, color: Colors.black26)
-              ],
-            ),
-            padding: const EdgeInsets.all(8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(IconHelper.getIcon(file.path, isDir),
-                    color: IconHelper.getIconColor(file.path, isDir), size: 24),
-                const SizedBox(width: 8),
-                Text(name,
-                    style: const TextStyle(
-                        fontSize: 14, decoration: TextDecoration.none)),
-              ],
-            ),
-          ),
-        );
-      },
-      child: DraggableWidget(
-        child: row,
-      ),
-    );
-  }
-
-  Widget _buildArchiveEntryItem(dynamic entry) {
-    String name;
-    String sizeStr;
-    String typeStr;
-    bool isDir;
-    bool isSelected;
-
-    if (entry is ArchiveFile) {
-      name = entry.name;
-      isDir = !entry.isFile;
-      sizeStr = isDir ? "" : filesize(entry.size);
-      typeStr = isDir ? "Folder" : "Packed File";
-      isSelected = _selectedPaths.contains(entry.name);
-    } else if (entry is RarEntry) {
-      name = entry.name;
-      isDir = entry.isDirectory;
-      sizeStr = isDir ? "" : filesize(entry.size);
-      typeStr = isDir ? "Folder" : "RAR File";
-      isSelected = _selectedPaths.contains(entry.name);
-    } else {
-      name = "Unknown";
-      sizeStr = "";
-      typeStr = "";
-      isDir = false;
-      isSelected = false;
-    }
-
-    final row = InkWell(
-      onTap: () => _toggleSelection(name),
-      child: Container(
-        color: isSelected ? const Color(0xFFCCE8FF) : null,
-        padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 4),
-        child: Row(
-          children: [
-            SizedBox(
-                width: 32,
-                child: Icon(IconHelper.getIcon(name, isDir),
-                    color: IconHelper.getIconColor(name, isDir), size: 20)),
-            Expanded(
-                flex: 5,
-                child: Text(name,
-                    style: const TextStyle(fontSize: 13),
-                    overflow: TextOverflow.ellipsis)),
-            Expanded(
-                flex: 2,
-                child: Text(sizeStr, style: const TextStyle(fontSize: 13))),
-            Expanded(
-                flex: 2,
-                child: Text(typeStr, style: const TextStyle(fontSize: 13))),
-            Expanded(
-                flex: 3, child: Text("", style: const TextStyle(fontSize: 13))),
-          ],
-        ),
-      ),
-    );
-
-    // Draggable Wrapper for Archive Items
-    return DragItemWidget(
-      dragItemProvider: (request) async {
-        final path = await _extractFileForDrag(entry);
-        if (path != null) {
-          final item = DragItem(
-            localData: path,
-          );
-          item.add(Formats.fileUri(Uri.file(path)));
-          item.add(Formats.plainText(path)); // Fallback
-          return item;
-        } else {
-          return null;
-        }
-      },
-      allowedOperations: () => [DropOperation.copy],
-      liftBuilder: (context, child) {
-        return Material(
-          color: Colors.transparent,
-          child: Container(
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.8),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.purpleAccent),
-              boxShadow: const [
-                BoxShadow(blurRadius: 5, color: Colors.black26)
-              ],
-            ),
-            padding: const EdgeInsets.all(8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(IconHelper.getIcon(name, isDir),
-                    color: IconHelper.getIconColor(name, isDir), size: 24),
-                const SizedBox(width: 8),
-                Text(name,
-                    style: const TextStyle(
-                        fontSize: 14, decoration: TextDecoration.none)),
-              ],
-            ),
-          ),
-        );
-      },
-      child: DraggableWidget(
-        child: row,
-      ),
-    );
   }
 
   Widget _buildStatusBar() {

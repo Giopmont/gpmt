@@ -1,20 +1,26 @@
 # Codex/Copilot Context
 
-## Project: GPMT (WinRAR Replica on Linux)
+## Project: GPMT (WinRAR-like Archive Manager)
 
-### Context
-Building a file manager and archive utility in Flutter that mimics WinRAR.
+### Idioma obrigatório
+**PT-BR em todas as respostas e em qualquer texto de UI.**
 
-### Key Components
-- `lib/main.dart`: Main UI, State, File listing logic.
-- `lib/worker.dart`: Background Isolate for extraction (supports 7z and Dart Archive).
+### Contexto
+Gerenciador de arquivos e arquivador em Flutter (Desktop Linux/macOS), com UI retro inspirada no WinRAR.
 
-### Rules
-1.  **Do not block UI:** File operations > 10MB should be async or isolated.
-2.  **Dependencies:** `unrar` (system), `7z` (system), `super_drag_and_drop` (pub), `archive` (pub).
-3.  **Style:** Retro Windows styling (Colors, Fonts).
+### Componentes-chave
+- `lib/main.dart`: UI, estado, listagem e navegação.
+- `lib/worker.dart`: Isolate para extração (7z/`archive`).
+- `macos/Runner/AppDelegate.swift`: bridge de arquivos abertos no Finder.
+- `linux/gpmt.desktop`: integração de menu/ações no Linux.
 
-### Common Patterns
-- **Opening Archive:** Check extension -> `unrar l` (if rar) OR `ZipDecoder` (if zip) -> Populate list.
-- **Extraction:** Show Progress Dialog -> Spawn Isolate -> Stream Progress -> Close Dialog.
-- **Drag & Drop:** Intercept drag -> Extract specific file to `/tmp` -> Return path to OS.
+### Regras
+1. **Não bloquear UI:** operações pesadas sempre async/isolate.
+2. **Dependências:** `unrar` e `7z` podem ser system ou empacotados em `assets/bin/...`.
+3. **Estilo:** visual retro, com feedback claro (SnackBar/AlertDialog).
+4. **Segurança:** trate permissões/erros silenciosamente, mas informe o usuário.
+
+### Padrões comuns
+- **Abrir arquivo:** checar extensão -> `unrar l` (RAR) ou `ZipDecoder` (ZIP) -> listar entradas.
+- **Extrair:** dialog + overwrite -> Isolate -> progresso -> fechar dialog.
+- **Drag & Drop:** extrair arquivo específico para temp e devolver caminho ao SO.
