@@ -9,82 +9,20 @@ import 'package:intl/intl.dart';
 import 'package:filesize/filesize.dart';
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 import 'package:open_filex/open_filex.dart';
-import 'package:path_provider/path_provider.dart';
 import 'worker.dart';
+import 'services/binary_locator.dart';
+import 'services/archive_parser.dart';
+import 'models/archive_entry.dart';
+import 'utils/icon_helper.dart';
+import 'utils/constants.dart';
 
 void main(List<String> args) {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(WinRARApp(args: args));
 }
 
-// Global path to 7z executable (defaults to system '7z', updated if bundled is found)
-String _sevenZipExecutable = '7z';
-String _unrarExecutable = 'unrar';
-
-class IconHelper {
-  static IconData getIcon(String path, bool isDirectory) {
-    if (isDirectory) return Icons.folder;
-
-    final ext = p.extension(path).toLowerCase();
-    switch (ext) {
-      case '.zip':
-      case '.rar':
-      case '.tar':
-      case '.gz':
-      case '.7z':
-        return Icons.inventory_2; // Archive look
-      case '.jpg':
-      case '.jpeg':
-      case '.png':
-      case '.gif':
-      case '.bmp':
-        return Icons.image;
-      case '.pdf':
-        return Icons.picture_as_pdf;
-      case '.txt':
-      case '.md':
-      case '.log':
-        return Icons.description;
-      case '.mp3':
-      case '.wav':
-      case '.ogg':
-        return Icons.audio_file;
-      case '.mp4':
-      case '.avi':
-      case '.mov':
-        return Icons.movie;
-      case '.exe':
-      case '.bat':
-      case '.sh':
-        return Icons.terminal;
-      default:
-        return Icons.insert_drive_file;
-    }
-  }
-
-  static Color getIconColor(String path, bool isDirectory) {
-    if (isDirectory) return const Color(0xFFFFD54F); // Windows folder yellow
-
-    final ext = p.extension(path).toLowerCase();
-    switch (ext) {
-      case '.zip':
-      case '.rar':
-      case '.tar':
-      case '.gz':
-        return Colors.purple.shade300;
-      case '.pdf':
-        return Colors.red.shade400;
-      case '.jpg':
-      case '.png':
-        return Colors.blue.shade400;
-      case '.exe':
-      case '.sh':
-        return Colors.grey.shade600;
-      default:
-        return Colors.grey.shade500;
-    }
-  }
-}
+// Singleton para localização de binários
+final _binaryLocator = BinaryLocator();
 
 class WinRARApp extends StatelessWidget {
   final List<String> args;
@@ -113,31 +51,20 @@ class WinRARMainScreen extends StatefulWidget {
   State<WinRARMainScreen> createState() => _WinRARMainScreenState();
 }
 
-class RarEntry {
-  final String name;
-  final int size;
-  final DateTime? dateModified;
-  final DateTime? dateCreated;
-  final bool isDirectory;
-
-  RarEntry({
-    required this.name,
-    required this.size,
-    this.dateModified,
-    this.dateCreated,
-    this.isDirectory = false,
-  });
-}
+// RarEntry foi movido para models/archive_entry.dart como ArchiveEntry
 
 class _WinRARMainScreenState extends State<WinRARMainScreen> {
   late String _currentPath;
   List<FileSystemEntity> _files = [];
   final Set<String> _selectedPaths = {};
 
+  // Cache de stats para evitar múltiplas chamadas statSync()
+  final Map<String, FileStat> _statsCache = {};
+
   // Archive viewing state
   bool _isViewingArchive = false;
   String? _archivePath;
-  List<dynamic> _currentArchiveEntries = []; // Can hold ArchiveFile or RarEntry
+  List<ArchiveEntry> _currentArchiveEntries = [];
   InputFileStream? _archiveInputStream;
 
   // Temp dir for drag-and-drop cache
@@ -147,9 +74,16 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   int _sortColumn = 0; // 0=Name, 1=Created, 2=Modified, 3=Type, 4=Size
   bool _sortAscending = true;
 
-  bool _isUnrarAvailable = false;
-  bool _is7zAvailable = false;
-  // final _appLinks = AppLinks(); // DISABLED - using native AppDelegate instead
+  // Larguras das colunas (redimensionáveis)
+  double _colWidthName = AppSizes.colWidthName;
+  double _colWidthCreated = AppSizes.colWidthCreated;
+  double _colWidthModified = AppSizes.colWidthModified;
+  double _colWidthType = AppSizes.colWidthType;
+  final double _colWidthSize = AppSizes.colWidthSize;
+
+  // Scroll controller para sincronizar header e body
+  final ScrollController _headerScrollController = ScrollController();
+
   static const _fileHandlerChannel = MethodChannel('com.gpmt/file_handler');
 
   @override
@@ -171,11 +105,10 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   }
 
   Future<void> _initApp() async {
-    // Check dependencies first
-    await _check7zAvailability();
-    await _checkUnrarAvailability();
+    // Inicializar localizador de binários
+    await _binaryLocator.initialize();
 
-    // Then process arguments (file open requests)
+    // Processar argumentos (requisições de abertura de arquivo)
     if (mounted) {
       _processArgs();
     }
@@ -317,229 +250,48 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     }
   }
 
-  Future<void> _check7zAvailability() async {
-    // 1. Try to setup bundled 7z
-    if (Platform.isLinux || Platform.isMacOS) {
+  // Métodos _check7zAvailability e _checkUnrarAvailability movidos para BinaryLocator
+
+  /// Obtém stats do cache ou carrega e armazena no cache.
+  FileStat _getCachedStat(FileSystemEntity entity) {
+    return _statsCache.putIfAbsent(entity.path, () {
       try {
-        final appDir = await getApplicationSupportDirectory();
-        final bundledPath = p.join(appDir.path, '7z');
-        final bundledFile = File(bundledPath);
-
-        // Check if we need to copy (if not exists or old?)
-        if (!bundledFile.existsSync()) {
-          try {
-            // Determine asset path based on platform
-            String assetPath = 'assets/bin/linux/7z';
-            if (Platform.isMacOS) {
-              assetPath = 'assets/bin/macos/7z';
-            }
-
-            // Note: 'assets/bin/linux/7z' and 'assets/bin/macos/7z' must be declared in pubspec.yaml
-            final byteData = await rootBundle.load(assetPath);
-            final buffer = byteData.buffer.asUint8List();
-
-            if (!appDir.existsSync()) {
-              appDir.createSync(recursive: true);
-            }
-
-            await bundledFile.writeAsBytes(buffer);
-
-            // chmod +x
-            await Process.run('chmod', ['+x', bundledPath]);
-          } catch (e) {
-            debugPrint("Failed to unpack bundled 7z: $e");
-          }
-        }
-
-        if (bundledFile.existsSync()) {
-          // Test it (simple info command)
-          final result = await Process.run(bundledPath, ['i']);
-          // 7z usually returns 0 on success, but sometimes depends on args. 'i' works.
-          if (result.exitCode == 0 || result.exitCode == 255) {
-            setState(() {
-              _is7zAvailable = true;
-              _sevenZipExecutable = bundledPath;
-            });
-            return;
-          }
-        }
-      } catch (e) {
-        debugPrint("Error checking bundled 7z: $e");
+        return entity.statSync();
+      } catch (_) {
+        return FileStat.statSync('/dev/null'); // Fallback
       }
-    }
-
-    // 2. Fallback to system 7z
-    try {
-      final result = await Process.run('which', ['7z']);
-      if (result.exitCode == 0) {
-        setState(() {
-          _is7zAvailable = true;
-          _sevenZipExecutable = '7z';
-        });
-      }
-    } catch (e) {
-      // Silent error
-    }
-  }
-
-  String _unrarErrorDetails = '';
-
-  Future<void> _checkUnrarAvailability() async {
-    // 1. Try to setup bundled unrar
-    if (Platform.isLinux || Platform.isMacOS) {
-      try {
-        final appDir = await getApplicationSupportDirectory();
-        final bundledPath = p.join(appDir.path, 'unrar');
-        final bundledFile = File(bundledPath);
-
-        // Always attempt to copy if size is 0 or not exists
-        if (!bundledFile.existsSync() || bundledFile.lengthSync() == 0) {
-          try {
-            String assetPath = 'assets/bin/linux/unrar';
-            if (Platform.isMacOS) {
-              assetPath = 'assets/bin/macos/unrar';
-            }
-
-            final byteData = await rootBundle.load(assetPath);
-            final buffer = byteData.buffer.asUint8List();
-
-            if (!appDir.existsSync()) {
-              appDir.createSync(recursive: true);
-            }
-
-            await bundledFile.writeAsBytes(buffer);
-            await Process.run('chmod', ['+x', bundledPath]);
-          } catch (e) {
-            _unrarErrorDetails = "Unpack failed: $e";
-            debugPrint("Failed to unpack bundled unrar: $e");
-          }
-        }
-
-        if (bundledFile.existsSync()) {
-          // Verify it runs
-          try {
-            final result = await Process.run(bundledPath, []);
-
-            // unrar with no args prints help and usually returns 0 or 7 (user error).
-            // We consider it valid if it produces output or returns typical exit codes.
-            if (result.exitCode == 0 ||
-                result.exitCode == 7 ||
-                result.stdout.toString().trim().isNotEmpty) {
-              setState(() {
-                _isUnrarAvailable = true;
-                _unrarExecutable = bundledPath;
-                _unrarErrorDetails = ''; // Clear error on success
-              });
-              return;
-            } else {
-              _unrarErrorDetails =
-                  "Execution check failed (Code ${result.exitCode}). Stderr: ${result.stderr}";
-            }
-          } catch (e) {
-            _unrarErrorDetails = "Execution exception: $e";
-            debugPrint("Bundled unrar failed execution test: $e");
-          }
-        }
-      } catch (e) {
-        _unrarErrorDetails = "General check error: $e";
-        debugPrint("Error checking bundled unrar: $e");
-      }
-    }
-
-    try {
-      final result = await Process.run('which', ['unrar']);
-      if (result.exitCode == 0) {
-        setState(() {
-          _isUnrarAvailable = true;
-          _unrarExecutable = 'unrar';
-          _unrarErrorDetails = '';
-        });
-      } else {
-        if (_unrarErrorDetails.isEmpty) {
-          _unrarErrorDetails =
-              "System unrar not found (which unrar returned ${result.exitCode})";
-        }
-      }
-    } catch (e) {
-      if (_unrarErrorDetails.isEmpty) {
-        _unrarErrorDetails = "System check failed: $e";
-      }
-    }
+    });
   }
 
   void _sortFiles() {
     if (_isViewingArchive) {
       _currentArchiveEntries.sort((a, b) {
-        // Always keep directories on top for Name sort, or mixed for others?
-        // Standard windows behavior: Folder always on top, then files.
-        // Let's implement generic compare first.
+        // Pastas sempre primeiro
+        if (a.isDirectory && !b.isDirectory) return -1;
+        if (!a.isDirectory && b.isDirectory) return 1;
 
-        dynamic valA, valB;
-        bool isDirA = false, isDirB = false;
-
-        if (a is ArchiveFile) {
-          isDirA = !a.isFile;
-          valA = a.name; // Fallback
-        } else if (a is RarEntry) {
-          isDirA = a.isDirectory;
-          valA = a.name;
-        }
-
-        if (b is ArchiveFile) {
-          isDirB = !b.isFile;
-          valB = b.name;
-        } else if (b is RarEntry) {
-          isDirB = b.isDirectory;
-          valB = b.name;
-        }
-
-        // Folders always first?
-        if (isDirA && !isDirB) return -1;
-        if (!isDirA && isDirB) return 1;
-
-        // Now compare by column
         int cmp = 0;
         switch (_sortColumn) {
-          case 0: // Name
-            valA = (a is ArchiveFile) ? a.name : (a as RarEntry).name;
-            valB = (b is ArchiveFile) ? b.name : (b as RarEntry).name;
-            cmp = valA
-                .toString()
-                .toLowerCase()
-                .compareTo(valB.toString().toLowerCase());
+          case 0: // Nome
+            cmp = a.name.toLowerCase().compareTo(b.name.toLowerCase());
             break;
-          case 1: // Created
-            // ArchiveFile doesn't have created easily accessible here, treat as 0
-            DateTime? dtA, dtB;
-            if (a is RarEntry) dtA = a.dateCreated;
-            if (b is RarEntry) dtB = b.dateCreated;
-            // Default to epoch if null
-            dtA ??= DateTime.fromMillisecondsSinceEpoch(0);
-            dtB ??= DateTime.fromMillisecondsSinceEpoch(0);
+          case 1: // Criado
+            final dtA = a.dateCreated ?? DateTime.fromMillisecondsSinceEpoch(0);
+            final dtB = b.dateCreated ?? DateTime.fromMillisecondsSinceEpoch(0);
             cmp = dtA.compareTo(dtB);
             break;
-          case 2: // Modified
-            DateTime? dtA, dtB;
-            if (a is RarEntry) dtA = a.dateModified;
-            // ArchiveFile lastModTime is int (seconds? DOS?)
-            // Let's assume standard unix for sorting logic simplicity or just use 0
-            // Fixing proper date parsing for ArchiveFile is logically separate
-            if (b is RarEntry) dtB = b.dateModified;
-            dtA ??= DateTime.fromMillisecondsSinceEpoch(0);
-            dtB ??= DateTime.fromMillisecondsSinceEpoch(0);
+          case 2: // Modificado
+            final dtA =
+                a.dateModified ?? DateTime.fromMillisecondsSinceEpoch(0);
+            final dtB =
+                b.dateModified ?? DateTime.fromMillisecondsSinceEpoch(0);
             cmp = dtA.compareTo(dtB);
             break;
-          case 3: // Type
-            String extA =
-                p.extension((a is ArchiveFile) ? a.name : (a as RarEntry).name);
-            String extB =
-                p.extension((b is ArchiveFile) ? b.name : (b as RarEntry).name);
-            cmp = extA.toLowerCase().compareTo(extB.toLowerCase());
+          case 3: // Tipo
+            cmp = a.extension.compareTo(b.extension);
             break;
-          case 4: // Size
-            int sizeA = (a is ArchiveFile) ? a.size : (a as RarEntry).size;
-            int sizeB = (b is ArchiveFile) ? b.size : (b as RarEntry).size;
-            cmp = sizeA.compareTo(sizeB);
+          case 4: // Tamanho
+            cmp = a.size.compareTo(b.size);
             break;
         }
 
@@ -553,34 +305,33 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         if (isDirA && !isDirB) return -1;
         if (!isDirA && isDirB) return 1;
 
+        // Usar cache de stats
+        final statA = _getCachedStat(a);
+        final statB = _getCachedStat(b);
+
         int cmp = 0;
         switch (_sortColumn) {
-          case 0: // Name
-            cmp = a.path.toLowerCase().compareTo(b.path.toLowerCase());
+          case 0: // Nome
+            cmp = p
+                .basename(a.path)
+                .toLowerCase()
+                .compareTo(p.basename(b.path).toLowerCase());
             break;
-          case 1: // Created (Changed)
-            try {
-              cmp = a.statSync().changed.compareTo(b.statSync().changed);
-            } catch (_) {
-              cmp = 0;
-            }
+          case 1: // Criado (Changed)
+            cmp = statA.changed.compareTo(statB.changed);
             break;
-          case 2: // Modified
-            try {
-              cmp = a.statSync().modified.compareTo(b.statSync().modified);
-            } catch (_) {
-              cmp = 0;
-            }
+          case 2: // Modificado
+            cmp = statA.modified.compareTo(statB.modified);
             break;
-          case 3: // Type
+          case 3: // Tipo
             cmp = p
                 .extension(a.path)
                 .toLowerCase()
                 .compareTo(p.extension(b.path).toLowerCase());
             break;
-          case 4: // Size
-            int sizeA = (a is File) ? a.statSync().size : 0;
-            int sizeB = (b is File) ? b.statSync().size : 0;
+          case 4: // Tamanho
+            final sizeA = isDirA ? 0 : statA.size;
+            final sizeB = isDirB ? 0 : statB.size;
             cmp = sizeA.compareTo(sizeB);
             break;
         }
@@ -602,9 +353,11 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   }
 
   @override
+  @override
   void dispose() {
     _closeArchiveStream();
     _cleanupSessionTempDir();
+    _headerScrollController.dispose();
     super.dispose();
   }
 
@@ -629,8 +382,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
   void _refreshFiles() {
     if (_isViewingArchive) {
-      // In archive mode, we don't refresh from disk unless we re-read the archive
-      // But here we might just assume static list for the view
+      // Em modo arquivo, não atualiza do disco
       return;
     }
 
@@ -640,13 +392,14 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         final entities = dir.listSync();
         setState(() {
           _files = entities;
+          _statsCache.clear(); // Limpar cache ao atualizar
           _sortFiles();
           _selectedPaths.clear();
         });
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error access directory: $e')),
+        SnackBar(content: Text('${AppStrings.errorAccessDirectory}: $e')),
       );
     }
   }
@@ -707,15 +460,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   }
 
   bool _isArchive(String path) {
-    final ext = p.extension(path).toLowerCase();
-    return ext == '.zip' ||
-        ext == '.zipx' ||
-        ext == '.7z' ||
-        ext == '.zi' || // some systems truncate .zip to .zi on open-with
-        ext == '.tar' ||
-        ext == '.tgz' ||
-        ext == '.gz' ||
-        ext == '.rar';
+    return SupportedExtensions.isArchive(path);
   }
 
   Future<void> _openArchive(String path) async {
@@ -726,23 +471,50 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       setState(() {
         _isViewingArchive = true;
         _archivePath = path;
-        _currentArchiveEntries = []; // Clear for RAR
-        _archiveInputStream = null; // No stream for RAR for now
+        _currentArchiveEntries = [];
+        _archiveInputStream = null;
         _selectedPaths.clear();
       });
 
-      if (!_isUnrarAvailable) {
+      // Tentar com 7z primeiro (mais informações)
+      if (_binaryLocator.is7zAvailable) {
+        try {
+          final result = await Process.run(
+            _binaryLocator.sevenZipExecutable,
+            ['l', '-slt', path],
+          );
+
+          if (result.exitCode == 0) {
+            final entries =
+                ArchiveParser.parse7zListing(result.stdout.toString());
+            setState(() {
+              _currentArchiveEntries = entries;
+            });
+            _sortFiles();
+            return;
+          }
+        } catch (e) {
+          debugPrint("7z RAR listing falhou, usando unrar: $e");
+        }
+      }
+
+      // Fallback para unrar
+      if (!_binaryLocator.isUnrarAvailable) {
         if (mounted) {
           showDialog(
             context: context,
             builder: (ctx) => AlertDialog(
-              title: const Text("Unrar Not Found"),
+              title: Text(AppStrings.unrarNotFound),
               content: Text(
-                  "To open RAR files, please install 'unrar' on your system.\n\nDebug Info: $_unrarErrorDetails"),
+                "Para abrir arquivos RAR, instale 'unrar' ou 'p7zip-full'.\n\n"
+                "${_binaryLocator.getInstallInstructions()}\n\n"
+                "Detalhes: ${_binaryLocator.unrarErrorDetails}",
+              ),
               actions: [
                 TextButton(
-                    onPressed: () => Navigator.pop(ctx),
-                    child: const Text("OK"))
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text("OK"),
+                )
               ],
             ),
           );
@@ -750,19 +522,23 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         return;
       }
 
-      final result = await Process.run(_unrarExecutable, ['l', '-c-', path]);
+      final result = await Process.run(
+        _binaryLocator.unrarExecutable,
+        ['l', '-c-', path],
+      );
 
       if (result.exitCode != 0) {
         if (mounted) {
           showDialog(
             context: context,
             builder: (ctx) => AlertDialog(
-              title: const Text("Error Opening RAR"),
-              content: Text("Failed to list RAR contents: ${result.stderr}"),
+              title: Text(AppStrings.errorOpenArchive),
+              content: Text("Falha ao listar conteúdo RAR: ${result.stderr}"),
               actions: [
                 TextButton(
-                    onPressed: () => Navigator.pop(ctx),
-                    child: const Text("OK"))
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text("OK"),
+                )
               ],
             ),
           );
@@ -770,125 +546,78 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         return;
       }
 
-      final output = result.stdout as String;
-      // debugPrint("Unrar output:\n$output"); // Silent
-
-      final lines = output.split('\n');
-      List<RarEntry> rarEntries = [];
-
-      // Regex for "Attributes Size Date Time Name" format
-      // Attributes: \S+ (can be 7 chars like ..A.... or 10 like -rw-r--r--)
-      // Size: digits
-      // Date: non-whitespace
-      // Time: non-whitespace
-      // Name: rest
-      final attrFirstRegex =
-          RegExp(r'^\s*(\S+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.+)$');
-
-      for (final line in lines) {
-        if (line.trim().isEmpty) continue;
-        // Ignore Headers and Footers
-        if (line.startsWith('---') ||
-            line.startsWith('Archive:') ||
-            line.startsWith('Details:') ||
-            line.contains('Attributes      Size') ||
-            line.startsWith('UNRAR') ||
-            line.contains('Alexander Roshal') ||
-            line.trim().startsWith(RegExp(r'\d+\s+\d+$'))) {
-          // Summary line (Size Count)
-          continue;
-        }
-
-        // Try matching standard line
-        final match = attrFirstRegex.firstMatch(line);
-        if (match != null) {
-          try {
-            final attr = match.group(1)!;
-            final sizeStr = match.group(2)!;
-            final dateStr = match.group(3)!;
-            final timeStr = match.group(4)!;
-            final name = match.group(5)!.trim();
-
-            if (attr.startsWith('Attributes')) continue;
-
-            final size = int.tryParse(sizeStr) ?? 0;
-            DateTime? dateModified;
-
-            final dateTimeString = '$dateStr $timeStr';
-            List<String> formats = [
-              'yyyy-MM-dd HH:mm',
-              'dd-MM-yy HH:mm',
-              'MM-dd-yy HH:mm',
-              'yyyy-MM-dd HH:mm:ss',
-            ];
-
-            for (final fmt in formats) {
-              try {
-                dateModified = DateFormat(fmt).parse(dateTimeString);
-                break;
-              } catch (_) {}
-            }
-
-            final isDirectory = attr.startsWith('d') || attr.contains('D');
-
-            rarEntries.add(RarEntry(
-              name: name,
-              size: size,
-              dateModified: dateModified,
-              isDirectory: isDirectory,
-            ));
-          } catch (e) {
-            // Silent error
-          }
-        }
-      }
-
+      final entries = ArchiveParser.parseUnrarListing(result.stdout.toString());
       setState(() {
-        _isViewingArchive = true;
-        _archivePath = path;
-        _currentArchiveEntries = rarEntries;
-        _archiveInputStream = null;
-        _selectedPaths.clear();
+        _currentArchiveEntries = entries;
       });
+      _sortFiles();
       return;
     }
 
-    // Other archive types handling (Zip, Tar, Gz)
+    // Outros tipos de arquivo (Zip, Tar, Gz)
     try {
-      _closeArchiveStream(); // Close previous if exists
+      _closeArchiveStream();
       final inputStream = InputFileStream(path);
       Archive archive;
-      if (ext == '.zip') {
+
+      if (ext == '.zip' || ext == '.zipx' || ext == '.zi') {
         archive = ZipDecoder().decodeBuffer(inputStream);
       } else if (ext == '.tar') {
         archive = TarDecoder().decodeBuffer(inputStream);
       } else if (ext == '.gz' || ext == '.tgz') {
-        // GZip/TGZ view not fully implemented yet
         inputStream.close();
-        throw Exception("GZip/TGZ view not fully implemented yet");
+        throw Exception("Visualização GZip/TGZ não implementada ainda");
+      } else if (ext == '.7z' && _binaryLocator.is7zAvailable) {
+        inputStream.close();
+        // Usar 7z para listar arquivos .7z
+        final result = await Process.run(
+          _binaryLocator.sevenZipExecutable,
+          ['l', '-slt', path],
+        );
+        if (result.exitCode == 0) {
+          final entries =
+              ArchiveParser.parse7zListing(result.stdout.toString());
+          setState(() {
+            _isViewingArchive = true;
+            _archivePath = path;
+            _currentArchiveEntries = entries;
+            _archiveInputStream = null;
+            _selectedPaths.clear();
+          });
+          _sortFiles();
+          return;
+        }
+        throw Exception("Falha ao listar arquivo 7z");
       } else {
         inputStream.close();
-        throw Exception("Unsupported format: $ext");
+        throw Exception("Formato não suportado: $ext");
       }
+
+      // Converter ArchiveFile para ArchiveEntry
+      final entries =
+          archive.files.map((f) => ArchiveEntry.fromArchiveFile(f)).toList();
 
       setState(() {
         _isViewingArchive = true;
         _archivePath = path;
-        _currentArchiveEntries = archive.files; // Store ArchiveFile objects
+        _currentArchiveEntries = entries;
         _archiveInputStream = inputStream;
         _selectedPaths.clear();
       });
+      _sortFiles();
     } catch (e) {
       _closeArchiveStream();
       if (mounted) {
         showDialog(
           context: context,
           builder: (ctx) => AlertDialog(
-            title: const Text("Error Opening Archive"),
+            title: Text(AppStrings.errorOpenArchive),
             content: Text(e.toString()),
             actions: [
               TextButton(
-                  onPressed: () => Navigator.pop(ctx), child: const Text("OK"))
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text("OK"),
+              )
             ],
           ),
         );
@@ -1010,7 +739,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
     // Check RAR
     if (p.extension(sourceArchive).toLowerCase() == '.rar') {
-      if (!_isUnrarAvailable) {
+      if (!_binaryLocator.isUnrarAvailable) {
         if (mounted) {
           showDialog(
             context: context,
@@ -1053,7 +782,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       }
 
       try {
-        final result = await Process.run(_unrarExecutable, unrarArgs);
+        final result =
+            await Process.run(_binaryLocator.unrarExecutable, unrarArgs);
 
         if (mounted) Navigator.pop(context); // Close loading
 
@@ -1091,8 +821,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           ? _selectedPaths.toList()
           : [],
       overwrite: overwriteChoice,
-      useSystem7z: _is7zAvailable,
-      custom7zExecutable: _sevenZipExecutable,
+      useSystem7z: _binaryLocator.is7zAvailable,
+      custom7zExecutable: _binaryLocator.sevenZipExecutable,
       flatten: false,
       sendPort: receivePort.sendPort,
     );
@@ -1249,104 +979,69 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     }
   }
 
-  Future<String?> _extractFileForDrag(dynamic entry) async {
+  Future<String?> _extractFileForDrag(ArchiveEntry entry) async {
     if (_archivePath == null) return null;
 
     try {
-      // Use session temp dir if available, else fallback to new temp
       final tempDir = _sessionTempDir ??
           Directory.systemTemp.createTempSync('winrar_drag_');
 
-      if (entry is FileSystemEntity) {
-        return entry.path;
-      }
+      if (entry.isDirectory) return null;
 
-      String name;
-      bool isDir;
+      final destPath = p.join(tempDir.path, p.basename(entry.name));
+      final destFile = File(destPath);
 
-      if (entry is ArchiveFile) {
-        name = entry.name;
-        isDir = !entry.isFile;
-        if (isDir) return null;
-
-        final destPath = p.join(tempDir.path, p.basename(name));
-        final destFile = File(destPath);
-
-        // CACHE HIT CHECK
-        if (destFile.existsSync()) {
-          return destPath;
-        }
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-                content: Text('Preparing drag...'),
-                duration: Duration(milliseconds: 500)),
-          );
-        }
-
-        // Use Isolate for extraction to avoid freeze/crash on large files
-        final receivePort = ReceivePort();
-        final task = ExtractTask(
-          sourcePath: _archivePath!,
-          destinationPath: tempDir.path,
-          selectedFiles: [name], // Extract only this file
-          overwrite: true,
-          useSystem7z: _is7zAvailable,
-          custom7zExecutable: _sevenZipExecutable,
-          flatten: true,
-          sendPort: receivePort.sendPort,
-        );
-
-        // Show a non-blocking overlay progress or just await
-        // Since drag provider expects a future, we just await.
-        // To show progress, we might need a Overlay.
-        // For now, let's just ensure it DOESN'T CRASH/FREEZE UI.
-        // Users will see the drag "hover" until done.
-
-        await Isolate.spawn(extractWorker, task);
-
-        await for (final message in receivePort) {
-          if (message is Map) {
-            if (message['type'] == 'done') break;
-            if (message['type'] == 'error') throw Exception(message['message']);
-          }
-        }
-        receivePort.close();
-
+      // Cache hit - arquivo já extraído
+      if (destFile.existsSync()) {
         return destPath;
-      } else if (entry is RarEntry) {
-        name = entry.name;
-        isDir = entry.isDirectory;
-        if (isDir) return null;
+      }
 
-        final destPath = p.join(tempDir.path, p.basename(name));
-        final destFile = File(destPath);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Preparando arraste...'),
+            duration: Duration(milliseconds: 500),
+          ),
+        );
+      }
 
-        // CACHE HIT CHECK
-        if (destFile.existsSync()) {
+      // RAR usa unrar diretamente
+      if (SupportedExtensions.isRar(_archivePath!)) {
+        final args = ['e', '-y', _archivePath!, entry.name, tempDir.path];
+        final result = await Process.run(_binaryLocator.unrarExecutable, args);
+
+        if (result.exitCode == 0 && destFile.existsSync()) {
           return destPath;
         }
+        return null;
+      }
 
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-                content: Text('Preparing drag...'),
-                duration: Duration(milliseconds: 500)),
-          );
-        }
+      // Outros formatos usam Isolate
+      final receivePort = ReceivePort();
+      final task = ExtractTask(
+        sourcePath: _archivePath!,
+        destinationPath: tempDir.path,
+        selectedFiles: [entry.name],
+        overwrite: true,
+        useSystem7z: _binaryLocator.is7zAvailable,
+        custom7zExecutable: _binaryLocator.sevenZipExecutable,
+        flatten: true,
+        sendPort: receivePort.sendPort,
+      );
 
-        final args = ['e', '-y', _archivePath!, name, tempDir.path];
-        final result = await Process.run(_unrarExecutable, args);
+      await Isolate.spawn(extractWorker, task);
 
-        if (result.exitCode == 0) {
-          if (destFile.existsSync()) {
-            return destPath;
-          }
+      await for (final message in receivePort) {
+        if (message is Map) {
+          if (message['type'] == 'done') break;
+          if (message['type'] == 'error') throw Exception(message['message']);
         }
       }
+      receivePort.close();
+
+      return destPath;
     } catch (e) {
-      // Silent error
+      debugPrint('Erro ao extrair para drag: $e');
     }
     return null;
   }
@@ -1409,55 +1104,53 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           _isViewingArchive ? _currentArchiveEntries.length : _files.length;
       details.add(Text("Contains: $count items"));
 
-      // Calculate total size if possible (simple sum)
+      // Calcular tamanho total
       int totalSize = 0;
       if (_isViewingArchive) {
         for (var e in _currentArchiveEntries) {
-          if (e is ArchiveFile) totalSize += e.size;
-          if (e is RarEntry) totalSize += e.size;
+          totalSize += e.size;
         }
-        details.add(Text("Total Packed Size: ${filesize(totalSize)}"));
+        details.add(Text("Tamanho Total: ${filesize(totalSize)}"));
       }
     } else {
-      // Show info about selection
-      title = "Selection Details";
-      details.add(Text("Selected: ${_selectedPaths.length} items"));
+      // Informações da seleção
+      title = "Detalhes da Seleção";
+      details.add(Text("Selecionados: ${_selectedPaths.length} itens"));
       details.add(const Divider());
 
       if (_selectedPaths.length == 1) {
         String path = _selectedPaths.first;
-        details.add(Text("Name: ${p.basename(path)}"));
+        details.add(Text("Nome: ${p.basename(path)}"));
 
         if (!_isViewingArchive) {
           try {
             final stat = File(path).statSync();
-            details.add(Text("Size: ${filesize(stat.size)}"));
+            details.add(Text("Tamanho: ${filesize(stat.size)}"));
             details.add(Text(
-                "Modified: ${DateFormat('yyyy-MM-dd HH:mm').format(stat.modified)}"));
-            details.add(Text("Permissions: ${stat.modeString()}"));
+                "Modificado: ${DateFormat('yyyy-MM-dd HH:mm').format(stat.modified)}"));
+            details.add(Text("Permissões: ${stat.modeString()}"));
           } catch (e) {
-            details.add(const Text("Could not read file stats."));
+            details.add(
+                const Text("Não foi possível ler informações do arquivo."));
           }
         } else {
-          // Find entry in archive list
-          var entry = _currentArchiveEntries.firstWhere((e) {
-            if (e is ArchiveFile) return e.name == path;
-            if (e is RarEntry) return e.name == path;
-            return false;
-          }, orElse: () => null);
+          // Buscar entrada na lista do arquivo
+          final entry = _currentArchiveEntries.cast<ArchiveEntry?>().firstWhere(
+                (e) => e?.name == path,
+                orElse: () => null,
+              );
 
           if (entry != null) {
-            if (entry is ArchiveFile) {
-              details.add(Text("Size: ${filesize(entry.size)}"));
-            }
-            if (entry is RarEntry) {
-              details.add(Text("Size: ${filesize(entry.size)}"));
+            details.add(Text("Tamanho: ${filesize(entry.size)}"));
+            if (entry.dateModified != null) {
+              details.add(Text(
+                "Modificado: ${DateFormat('yyyy-MM-dd HH:mm').format(entry.dateModified!)}",
+              ));
             }
           }
         }
       } else {
-        // Multiple items
-        details.add(const Text("Multiple items selected."));
+        details.add(const Text("Múltiplos itens selecionados."));
       }
     }
 
@@ -1520,7 +1213,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     if (confirm != true) return;
 
     if (ext == '.rar') {
-      if (!_isUnrarAvailable) {
+      if (!_binaryLocator.isUnrarAvailable) {
         if (mounted) {
           ScaffoldMessenger.of(context)
               .showSnackBar(const SnackBar(content: Text('unrar not found.')));
@@ -1535,7 +1228,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('Attempting repair...')));
         }
-        final result = await Process.run(_unrarExecutable, ['r', path]);
+        final result =
+            await Process.run(_binaryLocator.unrarExecutable, ['r', path]);
         if (mounted) {
           if (result.exitCode == 0) {
             _showInfoDialog("Repair Complete", "Output:\n${result.stdout}");
@@ -1712,6 +1406,10 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     );
   }
 
+  /// Número total de itens (inclui ".." como primeiro item).
+  int get _itemCount =>
+      1 + (_isViewingArchive ? _currentArchiveEntries.length : _files.length);
+
   Widget _buildFileList() {
     return DropRegion(
       formats: Formats.standardFormats,
@@ -1723,79 +1421,176 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       },
       child: Container(
         color: Colors.white,
-        child: Column(
-          children: [
-            // DataTable with fixed header
-            Container(
-              decoration: const BoxDecoration(
-                color: Color(0xFFF5F5F5),
-                border: Border(
-                  bottom: BorderSide(color: Color(0xFFCCCCCC), width: 1),
-                ),
-              ),
-              child: _buildDataTableHeader(),
-            ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final double availableWidth = constraints.maxWidth;
+            final double fixedColumnsWidth = _colWidthCreated +
+                _colWidthModified +
+                _colWidthType +
+                _colWidthSize;
+            final double minRequiredNameWidth = _colWidthName;
 
-            // Scrollable content
-            Expanded(
-              child: SingleChildScrollView(
-                child: _buildDataTableBody(),
-              ),
-            ),
-          ],
+            // Se houver espaço sobrando, expande a coluna Nome
+            // Se não, usa o tamanho definido pelo usuário e permite scroll horizontal
+            double renderNameWidth = minRequiredNameWidth;
+            if (availableWidth > fixedColumnsWidth + minRequiredNameWidth) {
+              renderNameWidth = availableWidth - fixedColumnsWidth;
+            }
+
+            // Largura total do conteúdo
+            final double totalContentWidth =
+                renderNameWidth + fixedColumnsWidth;
+
+            return Column(
+              children: [
+                // Header
+                Container(
+                  decoration: BoxDecoration(
+                    color: AppColors.tableHeaderBackground,
+                    border: const Border(
+                      bottom:
+                          BorderSide(color: AppColors.headerBorder, width: 1),
+                    ),
+                  ),
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    controller: _headerScrollController,
+                    physics: const ClampingScrollPhysics(),
+                    child: SizedBox(
+                      width: totalContentWidth,
+                      child: _buildDataTableHeader(nameWidth: renderNameWidth),
+                    ),
+                  ),
+                ),
+
+                // Lista virtualizada
+                Expanded(
+                  child: Scrollbar(
+                    controller: _headerScrollController,
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      controller: _headerScrollController,
+                      physics: const ClampingScrollPhysics(),
+                      child: SizedBox(
+                        width: totalContentWidth,
+                        child: ListView.builder(
+                          itemCount: _itemCount,
+                          itemExtent: 32,
+                          itemBuilder: (context, index) {
+                            if (index == 0) {
+                              return _buildParentDirRow(
+                                  nameWidth: renderNameWidth);
+                            }
+                            final realIndex = index - 1;
+                            if (_isViewingArchive) {
+                              return _buildArchiveEntryRow(
+                                _currentArchiveEntries[realIndex],
+                                realIndex,
+                                nameWidth: renderNameWidth,
+                              );
+                            } else {
+                              return _buildFileRow(
+                                _files[realIndex],
+                                realIndex,
+                                nameWidth: renderNameWidth,
+                              );
+                            }
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
         ),
       ),
     );
   }
 
-  Widget _buildDataTableHeader() {
+  Widget _buildDataTableHeader({double? nameWidth}) {
     return Row(
       children: [
-        _buildHeaderCell('Name', 0, flex: 4),
-        _buildHeaderCell('Created', 1, flex: 2),
-        _buildHeaderCell('Modified', 2, flex: 2),
-        _buildHeaderCell('Type', 3, flex: 2),
-        _buildHeaderCell('Size', 4, flex: 1, isLast: true),
+        _buildHeaderCell('Nome', 0, nameWidth ?? _colWidthName, (delta) {
+          setState(
+              () => _colWidthName = (_colWidthName + delta).clamp(100, 1000));
+        }),
+        _buildHeaderCell('Criado', 1, _colWidthCreated, (delta) {
+          setState(() =>
+              _colWidthCreated = (_colWidthCreated + delta).clamp(80, 250));
+        }),
+        _buildHeaderCell('Modificado', 2, _colWidthModified, (delta) {
+          setState(() =>
+              _colWidthModified = (_colWidthModified + delta).clamp(80, 250));
+        }),
+        _buildHeaderCell('Tipo', 3, _colWidthType, (delta) {
+          setState(
+              () => _colWidthType = (_colWidthType + delta).clamp(60, 200));
+        }),
+        _buildHeaderCell('Tamanho', 4, _colWidthSize, null, isLast: true),
       ],
     );
   }
 
-  Widget _buildHeaderCell(String label, int columnIndex,
-      {required int flex, bool isLast = false}) {
+  Widget _buildHeaderCell(
+    String label,
+    int columnIndex,
+    double width,
+    void Function(double)? onResize, {
+    bool isLast = false,
+  }) {
     final isActive = _sortColumn == columnIndex;
     final arrow = isActive ? (_sortAscending ? ' ▲' : ' ▼') : '';
 
-    return Expanded(
-      flex: flex,
-      child: InkWell(
-        onTap: () => _onColumnHeaderTap(columnIndex),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
-          decoration: BoxDecoration(
-            border: isLast
-                ? null
-                : const Border(
-                    right: BorderSide(color: Color(0xFFD0D0D0), width: 1),
+    return SizedBox(
+      width: width,
+      child: Row(
+        children: [
+          Expanded(
+            child: InkWell(
+              onTap: () => _onColumnHeaderTap(columnIndex),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+                child: Text(
+                  '$label$arrow',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                    color: isActive ? Colors.blue.shade800 : Colors.black87,
                   ),
-          ),
-          child: Text(
-            '$label$arrow',
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 13,
-              color: isActive ? Colors.blue.shade800 : Colors.black87,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
             ),
           ),
-        ),
+          if (!isLast)
+            GestureDetector(
+              onHorizontalDragUpdate: (details) {
+                onResize?.call(details.delta.dx);
+              },
+              child: MouseRegion(
+                cursor: SystemMouseCursors.resizeColumn,
+                child: Container(
+                  width: 8,
+                  height: 36,
+                  decoration: const BoxDecoration(
+                    border: Border(
+                      right: BorderSide(color: Color(0xFFB0B0B0), width: 1),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
 
-  Widget _buildDataTableBody() {
-    final List<Widget> rows = [];
-
-    // Parent directory row ".."
-    rows.add(_buildDataRow(
+  /// Linha do diretório pai ".."
+  Widget _buildParentDirRow({double? nameWidth}) {
+    return _buildDataRow(
       icon: Icons.folder_open,
       iconColor: Colors.amber,
       name: '..',
@@ -1807,21 +1602,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       onTap: _navigateUp,
       onDoubleTap: _navigateUp,
       isEven: true,
-    ));
-
-    if (_isViewingArchive) {
-      for (int i = 0; i < _currentArchiveEntries.length; i++) {
-        final entry = _currentArchiveEntries[i];
-        rows.add(_buildArchiveEntryRow(entry, i));
-      }
-    } else {
-      for (int i = 0; i < _files.length; i++) {
-        final file = _files[i];
-        rows.add(_buildFileRow(file, i));
-      }
-    }
-
-    return Column(children: rows);
+      nameWidth: nameWidth,
+    );
   }
 
   Widget _buildDataRow({
@@ -1837,6 +1619,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     required VoidCallback onDoubleTap,
     required bool isEven,
     Widget? dragWrapper,
+    double? nameWidth,
   }) {
     final rowContent = InkWell(
       onTap: onTap,
@@ -1852,15 +1635,14 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         ),
         child: Row(
           children: [
-            // Name column with icon
-            Expanded(
-              flex: 4,
+            // Coluna Nome com ícone
+            SizedBox(
+              width: nameWidth ?? _colWidthName,
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+                padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
                 decoration: const BoxDecoration(
                   border: Border(
-                    right: BorderSide(color: Color(0xFFE8E8E8), width: 1),
+                    right: BorderSide(color: Color(0xFFD0D0D0), width: 1),
                   ),
                 ),
                 child: Row(
@@ -1878,67 +1660,67 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
                 ),
               ),
             ),
-            // Created column
-            Expanded(
-              flex: 2,
+            // Coluna Criado
+            SizedBox(
+              width: _colWidthCreated,
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+                padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
                 decoration: const BoxDecoration(
                   border: Border(
-                    right: BorderSide(color: Color(0xFFE8E8E8), width: 1),
+                    right: BorderSide(color: Color(0xFFD0D0D0), width: 1),
                   ),
                 ),
                 child: Text(
                   created,
                   style: const TextStyle(fontSize: 12, color: Colors.black54),
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ),
-            // Modified column
-            Expanded(
-              flex: 2,
+            // Coluna Modificado
+            SizedBox(
+              width: _colWidthModified,
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+                padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
                 decoration: const BoxDecoration(
                   border: Border(
-                    right: BorderSide(color: Color(0xFFE8E8E8), width: 1),
+                    right: BorderSide(color: Color(0xFFD0D0D0), width: 1),
                   ),
                 ),
                 child: Text(
                   modified,
                   style: const TextStyle(fontSize: 12, color: Colors.black54),
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ),
-            // Type column
-            Expanded(
-              flex: 2,
+            // Coluna Tipo
+            SizedBox(
+              width: _colWidthType,
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+                padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
                 decoration: const BoxDecoration(
                   border: Border(
-                    right: BorderSide(color: Color(0xFFE8E8E8), width: 1),
+                    right: BorderSide(color: Color(0xFFD0D0D0), width: 1),
                   ),
                 ),
                 child: Text(
                   type,
                   style: const TextStyle(fontSize: 12, color: Colors.black54),
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ),
-            // Size column
-            Expanded(
-              flex: 1,
+            // Coluna Tamanho
+            SizedBox(
+              width: _colWidthSize,
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+                padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
                 child: Text(
                   size,
                   style: const TextStyle(fontSize: 12, color: Colors.black87),
                   textAlign: TextAlign.right,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ),
@@ -1950,7 +1732,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     return dragWrapper ?? rowContent;
   }
 
-  Widget _buildFileRow(FileSystemEntity file, int index) {
+  Widget _buildFileRow(FileSystemEntity file, int index, {double? nameWidth}) {
     final name = p.basename(file.path);
     final isSelected = _selectedPaths.contains(file.path);
     final isDir = file is Directory;
@@ -1962,8 +1744,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
     try {
       final stat = file.statSync();
-      dateStr = DateFormat('yyyy-MM-dd HH:mm').format(stat.modified);
-      createdStr = DateFormat('yyyy-MM-dd HH:mm').format(stat.changed);
+      dateStr = DateFormat('yyyy-MM-dd HH:mm:ss').format(stat.modified);
+      createdStr = DateFormat('yyyy-MM-dd HH:mm:ss').format(stat.changed);
       if (file is File) {
         sizeStr = filesize(stat.size);
         final ext = p.extension(file.path);
@@ -2037,6 +1819,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             }
           },
           isEven: index % 2 == 0,
+          nameWidth: nameWidth,
         ),
       ),
     );
@@ -2044,47 +1827,22 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     return dragWrapper;
   }
 
-  Widget _buildArchiveEntryRow(dynamic entry, int index) {
-    String name;
-    String sizeStr;
-    String typeStr;
+  Widget _buildArchiveEntryRow(ArchiveEntry entry, int index,
+      {double? nameWidth}) {
+    final name = entry.name;
+    final isDir = entry.isDirectory;
+    final sizeStr = isDir ? "" : filesize(entry.size);
+    final typeStr = entry.typeDescription;
+    final isSelected = _selectedPaths.contains(entry.name);
+
     String dateStr = "";
     String createdStr = "";
-    bool isDir;
-    bool isSelected;
 
-    if (entry is ArchiveFile) {
-      name = entry.name;
-      isDir = !entry.isFile;
-      sizeStr = isDir ? "" : filesize(entry.size);
-      typeStr = isDir
-          ? "Folder"
-          : (p.extension(name).isEmpty
-              ? "File"
-              : "${p.extension(name).substring(1).toUpperCase()} File");
-      isSelected = _selectedPaths.contains(entry.name);
-    } else if (entry is RarEntry) {
-      name = entry.name;
-      isDir = entry.isDirectory;
-      sizeStr = isDir ? "" : filesize(entry.size);
-      typeStr = isDir
-          ? "Folder"
-          : (p.extension(name).isEmpty
-              ? "RAR File"
-              : "${p.extension(name).substring(1).toUpperCase()} File");
-      if (entry.dateModified != null) {
-        dateStr = DateFormat('yyyy-MM-dd HH:mm').format(entry.dateModified!);
-      }
-      if (entry.dateCreated != null) {
-        createdStr = DateFormat('yyyy-MM-dd HH:mm').format(entry.dateCreated!);
-      }
-      isSelected = _selectedPaths.contains(entry.name);
-    } else {
-      name = "Unknown";
-      sizeStr = "";
-      typeStr = "";
-      isDir = false;
-      isSelected = false;
+    if (entry.dateModified != null) {
+      dateStr = DateFormat('yyyy-MM-dd HH:mm:ss').format(entry.dateModified!);
+    }
+    if (entry.dateCreated != null) {
+      createdStr = DateFormat('yyyy-MM-dd HH:mm:ss').format(entry.dateCreated!);
     }
 
     final icon = IconHelper.getIcon(name, isDir);
@@ -2142,6 +1900,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           onTap: () => _toggleSelection(name),
           onDoubleTap: () {},
           isEven: index % 2 == 0,
+          nameWidth: nameWidth,
         ),
       ),
     );
@@ -2229,7 +1988,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   Future<void> _compressFilesToCurrentArchive(List<String> files) async {
     // We strictly need 7z or zip for this. Dart archive lib is bad at 'updating' in place.
 
-    if (!_is7zAvailable) {
+    if (!_binaryLocator.is7zAvailable) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
             content: Text(
@@ -2265,7 +2024,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
       final args = ['u', _archivePath!, ...files];
 
-      final result = await Process.run(_sevenZipExecutable, args);
+      final result = await Process.run(_binaryLocator.sevenZipExecutable, args);
 
       if (mounted) Navigator.pop(context); // Close loading
 
@@ -2319,10 +2078,10 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     try {
       // Prefer 7z if available
 
-      if (_is7zAvailable) {
+      if (_binaryLocator.is7zAvailable) {
         final args = ['a', outputFile, ...files];
 
-        await Process.run(_sevenZipExecutable, args);
+        await Process.run(_binaryLocator.sevenZipExecutable, args);
       } else {
         // Fallback to Dart archive
 
