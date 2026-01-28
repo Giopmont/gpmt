@@ -1385,23 +1385,103 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     );
   }
 
-  void _performDelete() {
-    for (final path in _selectedPaths) {
+  void _performDelete() async {
+    if (_isViewingArchive && _archivePath != null) {
+      // Delete from archive using rar d or 7z d
+      final ext = p.extension(_archivePath!).toLowerCase();
+
+      // Show progress
+      if (mounted) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => const Center(child: CircularProgressIndicator()),
+        );
+      }
+
       try {
-        final type = FileSystemEntity.typeSync(path);
-        if (type == FileSystemEntityType.file) {
-          File(path).deleteSync();
-        } else if (type == FileSystemEntityType.directory) {
-          Directory(path).deleteSync(recursive: true);
+        ProcessResult result;
+        // Get the full paths of selected items
+        final filesToDelete =
+            _selectedPaths.map((name) => _getFullArchivePath(name)).toList();
+
+        if (ext == '.rar') {
+          if (!_binaryLocator.isRarAvailable) {
+            if (mounted) Navigator.pop(context);
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                  content:
+                      Text('Install "rar" CLI to delete from RAR archives.')),
+            );
+            return;
+          }
+          // rar d <archive> <files...>
+          final args = ['d', _archivePath!, ...filesToDelete];
+          result = await Process.run(_binaryLocator.rarExecutable, args);
+        } else {
+          if (!_binaryLocator.is7zAvailable) {
+            if (mounted) Navigator.pop(context);
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                  content: Text('Install "7z" to delete from archives.')),
+            );
+            return;
+          }
+          // 7z d <archive> <files...>
+          final args = ['d', _archivePath!, ...filesToDelete];
+          result = await Process.run(_binaryLocator.sevenZipExecutable, args);
+        }
+
+        if (mounted) Navigator.pop(context);
+        if (!mounted) return;
+
+        if (result.exitCode == 0) {
+          setState(() => _selectedPaths.clear());
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Files deleted successfully.')),
+          );
+          _openArchive(_archivePath!); // Refresh
+        } else {
+          showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Delete Error'),
+              content: Text('Failed to delete files:\n${result.stderr}'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('OK'))
+              ],
+            ),
+          );
         }
       } catch (e) {
-        // Silent error
+        if (mounted) Navigator.pop(context);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
       }
+    } else {
+      // Delete from file system
+      for (final path in _selectedPaths) {
+        try {
+          final type = FileSystemEntity.typeSync(path);
+          if (type == FileSystemEntityType.file) {
+            File(path).deleteSync();
+          } else if (type == FileSystemEntityType.directory) {
+            Directory(path).deleteSync(recursive: true);
+          }
+        } catch (e) {
+          // Silent error
+        }
+      }
+      setState(() {
+        _selectedPaths.clear();
+      });
+      _refreshFiles();
     }
-    setState(() {
-      _selectedPaths.clear();
-    });
-    _refreshFiles();
   }
 
   @override
@@ -2127,16 +2207,18 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     String ext = p.extension(_archivePath!).toLowerCase();
 
     if (ext == '.rar') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Cannot add files to RAR archives (Read-only).')),
-      );
-
-      return;
+      if (!_binaryLocator.isRarAvailable) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content: Text(
+                  'To add files to RAR archives, please install the "rar" CLI tool (non-free).')),
+        );
+        return;
+      }
+      // Continue to RAR logic below (we will need to branch logic based on extension)
     }
 
     // Show Progress
-
     if (mounted) {
       showDialog(
         context: context,
@@ -2146,34 +2228,94 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     }
 
     try {
-      // 7z u <archive_name> <files...>
+      ProcessResult result;
 
-      final args = ['u', _archivePath!, ...files];
+      if (ext == '.rar') {
+        // rar a -ep1 -ap<destino> <archive_name> <files...>
+        // -ep1: Exclude base directory from names
+        // -ap<path>: Set path inside archive
+        final List<String> args = ['a', '-ep1'];
+        if (_archiveVirtualPath.isNotEmpty) {
+          // Remove trailing slash for -ap flag
+          String destPath = _archiveVirtualPath;
+          if (destPath.endsWith('/')) {
+            destPath = destPath.substring(0, destPath.length - 1);
+          }
+          args.add('-ap$destPath');
+        }
+        args.add(_archivePath!);
+        args.addAll(files);
+        result = await Process.run(_binaryLocator.rarExecutable, args);
+      } else {
+        // For 7z, we need to create a temporary directory structure
+        // that mirrors the destination path and copy files there first
+        if (_archiveVirtualPath.isNotEmpty) {
+          // Create temp dir with the destination structure
+          final tempDir = await Directory.systemTemp.createTemp('gpmt_add_');
+          try {
+            final destDir =
+                Directory(p.join(tempDir.path, _archiveVirtualPath));
+            await destDir.create(recursive: true);
 
-      final result = await Process.run(_binaryLocator.sevenZipExecutable, args);
+            // Copy files to the destination structure
+            for (final filePath in files) {
+              final file = File(filePath);
+              if (await file.exists()) {
+                await file.copy(p.join(destDir.path, p.basename(filePath)));
+              }
+            }
+
+            // Add the structured temp dir to archive
+            final args = ['u', _archivePath!, '-r', '${tempDir.path}/*'];
+            result = await Process.run(
+              _binaryLocator.sevenZipExecutable,
+              args,
+              workingDirectory: tempDir.path,
+            );
+
+            // Cleanup temp dir
+            await tempDir.delete(recursive: true);
+          } catch (e) {
+            await tempDir.delete(recursive: true);
+            rethrow;
+          }
+        } else {
+          // Root level - simple add
+          final args = ['u', '-ep1', _archivePath!, ...files];
+          result = await Process.run(_binaryLocator.sevenZipExecutable, args);
+        }
+      }
 
       if (mounted) Navigator.pop(context); // Close loading
 
       if (result.exitCode == 0) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-                content: Text('Files added to archive successfully.')),
+            const SnackBar(content: Text('Files added successfully.')),
           );
         }
-
-        // Refresh view
-
-        _openArchive(_archivePath!);
+        _openArchive(_archivePath!); // Refresh
       } else {
-        throw Exception(result.stderr);
+        if (mounted) {
+          showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Add Error'),
+              content: Text('Failed to add files:\n${result.stderr}'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text("OK"))
+              ],
+            ),
+          );
+        }
       }
     } catch (e) {
-      if (mounted && Navigator.canPop(context)) Navigator.pop(context);
-
+      if (mounted) Navigator.pop(context);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to add files: $e')),
+          SnackBar(content: Text('Error: $e')),
         );
       }
     }

@@ -13,15 +13,19 @@ class BinaryLocator {
 
   String _sevenZipExecutable = '7z';
   String _unrarExecutable = 'unrar';
+  String _rarExecutable = 'rar';
   bool _is7zAvailable = false;
   bool _isUnrarAvailable = false;
+  bool _isRarAvailable = false;
   String _unrarErrorDetails = '';
 
   // Getters
   String get sevenZipExecutable => _sevenZipExecutable;
   String get unrarExecutable => _unrarExecutable;
+  String get rarExecutable => _rarExecutable;
   bool get is7zAvailable => _is7zAvailable;
   bool get isUnrarAvailable => _isUnrarAvailable;
+  bool get isRarAvailable => _isRarAvailable;
   String get unrarErrorDetails => _unrarErrorDetails;
 
   /// Inicializa a detecção de todos os binários.
@@ -29,6 +33,7 @@ class BinaryLocator {
     await Future.wait([
       _check7zAvailability(),
       _checkUnrarAvailability(),
+      _checkRarAvailability(),
     ]);
   }
 
@@ -42,7 +47,9 @@ class BinaryLocator {
 
         if (!bundledFile.existsSync()) {
           await _extractBundledBinary(
-            assetPath: Platform.isMacOS ? 'assets/bin/macos/7z' : 'assets/bin/linux/7z',
+            assetPath: Platform.isMacOS
+                ? 'assets/bin/macos/7z'
+                : 'assets/bin/linux/7z',
             destPath: bundledPath,
             appDir: appDir,
           );
@@ -85,7 +92,9 @@ class BinaryLocator {
 
         if (!bundledFile.existsSync() || bundledFile.lengthSync() == 0) {
           await _extractBundledBinary(
-            assetPath: Platform.isMacOS ? 'assets/bin/macos/unrar' : 'assets/bin/linux/unrar',
+            assetPath: Platform.isMacOS
+                ? 'assets/bin/macos/unrar'
+                : 'assets/bin/linux/unrar',
             destPath: bundledPath,
             appDir: appDir,
           );
@@ -138,6 +147,20 @@ class BinaryLocator {
     }
   }
 
+  /// Verifica disponibilidade do rar (via system path, pois é licença proprietária/shareware).
+  Future<void> _checkRarAvailability() async {
+    try {
+      final result = await Process.run('which', ['rar']);
+      if (result.exitCode == 0) {
+        _isRarAvailable = true;
+        _rarExecutable = 'rar';
+        debugPrint('rar found (system)');
+      }
+    } catch (e) {
+      debugPrint('rar not found in system');
+    }
+  }
+
   /// Extrai um binário dos assets para o diretório de suporte do app.
   Future<void> _extractBundledBinary({
     required String assetPath,
@@ -166,9 +189,9 @@ class BinaryLocator {
   /// Retorna instruções de instalação para o sistema atual.
   String getInstallInstructions() {
     if (Platform.isLinux) {
-      return 'Instale via: sudo apt install p7zip-full unrar';
+      return 'Instale via: sudo apt install p7zip-full unrar rar';
     } else if (Platform.isMacOS) {
-      return 'Instale via: brew install p7zip unrar';
+      return 'Instale via: brew install p7zip unrar rar';
     }
     return 'Instale 7z e unrar no seu sistema.';
   }
