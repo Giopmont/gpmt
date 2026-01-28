@@ -11,6 +11,7 @@ class ExtractTask {
   final bool overwrite;
   final bool useSystem7z;
   final bool flatten;
+  final String? custom7zExecutable;
   final SendPort? sendPort;
 
   ExtractTask({
@@ -20,6 +21,7 @@ class ExtractTask {
     required this.overwrite,
     this.useSystem7z = false,
     this.flatten = false,
+    this.custom7zExecutable,
     this.sendPort,
   });
 }
@@ -32,7 +34,8 @@ void extractWorker(ExtractTask task) async {
       return;
     } catch (e) {
       if (task.sendPort != null) {
-        task.sendPort!.send({'type': 'error', 'message': '7z failed, falling back: $e'});
+        task.sendPort!
+            .send({'type': 'error', 'message': '7z failed, falling back: $e'});
       }
       // Fallback to Dart implementation below
     }
@@ -50,12 +53,12 @@ void extractWorker(ExtractTask task) async {
     } else {
       throw Exception("Unsupported format for extraction: $ext");
     }
-    
+
     int totalFiles = archive.length;
     if (task.selectedFiles.isNotEmpty) {
-      totalFiles = task.selectedFiles.length; 
+      totalFiles = task.selectedFiles.length;
     }
-    
+
     int processedCount = 0;
 
     for (final file in archive) {
@@ -65,12 +68,12 @@ void extractWorker(ExtractTask task) async {
 
       final filename = task.flatten ? p.basename(file.name) : file.name;
       final destPath = p.join(task.destinationPath, filename);
-      
+
       if (task.sendPort != null) {
         task.sendPort!.send({
-          'type': 'progress', 
-          'filename': filename, 
-          'current': processedCount, 
+          'type': 'progress',
+          'filename': filename,
+          'current': processedCount,
           'total': totalFiles
         });
       }
@@ -79,11 +82,11 @@ void extractWorker(ExtractTask task) async {
         final destFile = File(destPath);
         if (destFile.existsSync()) {
           if (!task.overwrite) {
-             processedCount++;
-             continue; 
+            processedCount++;
+            continue;
           }
         }
-        
+
         destFile.createSync(recursive: true);
         final outputStream = OutputFileStream(destPath);
         try {
@@ -98,7 +101,7 @@ void extractWorker(ExtractTask task) async {
       }
       processedCount++;
     }
-    
+
     if (task.sendPort != null) {
       task.sendPort!.send({'type': 'done'});
     }
@@ -115,22 +118,23 @@ Future<void> _extractWith7z(ExtractTask task) async {
   // Use 'e' (extract here) if flatten is true, otherwise 'x' (extract with full paths)
   final command = task.flatten ? 'e' : 'x';
   final args = [command, task.sourcePath, '-o${task.destinationPath}'];
-  
+
   // Overwrite mode
   if (task.overwrite) {
     args.add('-aoa'); // Overwrite All
   } else {
     args.add('-aos'); // Skip existing
   }
-  
+
   // Add selected files
   if (task.selectedFiles.isNotEmpty) {
     args.addAll(task.selectedFiles);
   }
 
   // Start process
-  final process = await Process.start('7z', args);
-  
+  final executable = task.custom7zExecutable ?? '7z';
+  final process = await Process.start(executable, args);
+
   // Parse stdout for progress
   process.stdout
       .transform(utf8.decoder)
@@ -142,8 +146,8 @@ Future<void> _extractWith7z(ExtractTask task) async {
         task.sendPort!.send({
           'type': 'progress',
           'filename': filename,
-          'current': 0, 
-          'total': 0    
+          'current': 0,
+          'total': 0
         });
       }
     }

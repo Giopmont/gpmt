@@ -10,7 +10,6 @@ import 'package:filesize/filesize.dart';
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:app_links/app_links.dart';
 import 'worker.dart';
 
 void main(List<String> args) {
@@ -20,11 +19,12 @@ void main(List<String> args) {
 
 // Global path to 7z executable (defaults to system '7z', updated if bundled is found)
 String _7zExecutable = '7z';
+String _unrarExecutable = 'unrar';
 
 class IconHelper {
   static IconData getIcon(String path, bool isDirectory) {
     if (isDirectory) return Icons.folder;
-    
+
     final ext = p.extension(path).toLowerCase();
     switch (ext) {
       case '.zip':
@@ -61,10 +61,10 @@ class IconHelper {
         return Icons.insert_drive_file;
     }
   }
-  
+
   static Color getIconColor(String path, bool isDirectory) {
     if (isDirectory) return const Color(0xFFFFD54F); // Windows folder yellow
-    
+
     final ext = p.extension(path).toLowerCase();
     switch (ext) {
       case '.zip':
@@ -112,6 +112,7 @@ class WinRARMainScreen extends StatefulWidget {
   @override
   State<WinRARMainScreen> createState() => _WinRARMainScreenState();
 }
+
 class RarEntry {
   final String name;
   final int size;
@@ -252,7 +253,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     _navigateTo(link);
   }
   */
-  
+
   void _processArgs() {
     debugPrint('=== GPMT Args Debug ===');
     debugPrint('Args count: ${widget.args.length}');
@@ -323,13 +324,13 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             // Note: 'assets/bin/linux/7z' and 'assets/bin/macos/7z' must be declared in pubspec.yaml
             final byteData = await rootBundle.load(assetPath);
             final buffer = byteData.buffer.asUint8List();
-            
+
             if (!appDir.existsSync()) {
               appDir.createSync(recursive: true);
             }
-            
+
             await bundledFile.writeAsBytes(buffer);
-            
+
             // chmod +x
             await Process.run('chmod', ['+x', bundledPath]);
           } catch (e) {
@@ -338,16 +339,16 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         }
 
         if (bundledFile.existsSync()) {
-           // Test it (simple info command)
-           final result = await Process.run(bundledPath, ['i']); 
-           // 7z usually returns 0 on success, but sometimes depends on args. 'i' works.
-           if (result.exitCode == 0 || result.exitCode == 255) {
-              setState(() {
-                _is7zAvailable = true;
-                _7zExecutable = bundledPath;
-              });
-              return;
-           }
+          // Test it (simple info command)
+          final result = await Process.run(bundledPath, ['i']);
+          // 7z usually returns 0 on success, but sometimes depends on args. 'i' works.
+          if (result.exitCode == 0 || result.exitCode == 255) {
+            setState(() {
+              _is7zAvailable = true;
+              _7zExecutable = bundledPath;
+            });
+            return;
+          }
         }
       } catch (e) {
         debugPrint("Error checking bundled 7z: $e");
@@ -369,11 +370,65 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   }
 
   Future<void> _checkUnrarAvailability() async {
+    // 1. Try to setup bundled unrar
+    if (Platform.isLinux || Platform.isMacOS) {
+      try {
+        final appDir = await getApplicationSupportDirectory();
+        final bundledPath = p.join(appDir.path, 'unrar');
+        final bundledFile = File(bundledPath);
+
+        // Check if we need to copy
+        if (!bundledFile.existsSync()) {
+          try {
+            String assetPath = 'assets/bin/linux/unrar';
+            if (Platform.isMacOS) {
+              assetPath = 'assets/bin/macos/unrar';
+            }
+
+            final byteData = await rootBundle.load(assetPath);
+            final buffer = byteData.buffer.asUint8List();
+
+            if (!appDir.existsSync()) {
+              appDir.createSync(recursive: true);
+            }
+
+            await bundledFile.writeAsBytes(buffer);
+            await Process.run('chmod', ['+x', bundledPath]);
+          } catch (e) {
+            debugPrint("Failed to unpack bundled unrar: $e");
+          }
+        }
+
+        if (bundledFile.existsSync()) {
+          // Verify it runs
+          try {
+            final result = await Process.run(bundledPath, []);
+            // unrar with no args prints help and usually returns 0 or 7 (user error).
+            // We consider it valid if it produces output or returns typical exit codes.
+            if (result.exitCode == 0 ||
+                result.exitCode == 7 ||
+                result.stdout.toString().trim().isNotEmpty) {
+              setState(() {
+                _isUnrarAvailable = true;
+                _unrarExecutable = bundledPath;
+              });
+              return;
+            }
+          } catch (e) {
+            debugPrint("Bundled unrar failed execution test: $e");
+          }
+        }
+      } catch (e) {
+        debugPrint("Error checking bundled unrar: $e");
+      }
+    }
+
     try {
       final result = await Process.run('which', ['unrar']);
       if (result.exitCode == 0) {
         setState(() {
           _isUnrarAvailable = true;
+          _unrarExecutable = 'unrar';
         });
       }
     } catch (e) {
@@ -534,7 +589,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         return;
       }
 
-      final result = await Process.run('unrar', ['l', '-c-', path]);
+      final result = await Process.run(_unrarExecutable, ['l', '-c-', path]);
 
       if (result.exitCode != 0) {
         if (mounted) {
@@ -837,7 +892,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       }
 
       try {
-        final result = await Process.run('unrar', unrarArgs);
+        final result = await Process.run(_unrarExecutable, unrarArgs);
 
         if (mounted) Navigator.pop(context); // Close loading
 
@@ -876,6 +931,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           : [],
       overwrite: overwriteChoice,
       useSystem7z: _is7zAvailable,
+      custom7zExecutable: _7zExecutable,
       flatten: false,
       sendPort: receivePort.sendPort,
     );
@@ -1076,6 +1132,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           selectedFiles: [name], // Extract only this file
           overwrite: true,
           useSystem7z: _is7zAvailable,
+          custom7zExecutable: _7zExecutable,
           flatten: true,
           sendPort: receivePort.sendPort,
         );
@@ -1119,7 +1176,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         }
 
         final args = ['e', '-y', _archivePath!, name, tempDir.path];
-        final result = await Process.run('unrar', args);
+        final result = await Process.run(_unrarExecutable, args);
 
         if (result.exitCode == 0) {
           if (destFile.existsSync()) {
@@ -1317,7 +1374,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('Attempting repair...')));
         }
-        final result = await Process.run('unrar', ['r', path]);
+        final result = await Process.run(_unrarExecutable, ['r', path]);
         if (mounted) {
           if (result.exitCode == 0) {
             _showInfoDialog("Repair Complete", "Output:\n${result.stdout}");
@@ -1494,505 +1551,322 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     );
   }
 
-    Widget _buildFileList() {
+  Widget _buildFileList() {
+    return DropRegion(
+      formats: Formats.standardFormats,
+      onDropOver: (event) {
+        return DropOperation.copy;
+      },
+      onPerformDrop: (event) async {
+        _handleDroppedFiles(event);
+      },
+      child: Container(
+        color: Colors.white,
+        child: Column(
+          children: [
+            // Header
 
-      return DropRegion(
+            Container(
+              color: const Color(0xFFEEEEEE),
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: const Row(
+                children: [
+                  SizedBox(width: 40), // Checkbox space
 
-        formats: Formats.standardFormats,
+                  Expanded(
+                      flex: 5,
+                      child: Text("Name",
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 13))),
 
-        onDropOver: (event) {
+                  Expanded(
+                      flex: 2,
+                      child: Text("Size",
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 13))),
 
-          return DropOperation.copy;
+                  Expanded(
+                      flex: 2,
+                      child: Text("Type",
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 13))),
 
-        },
-
-        onPerformDrop: (event) async {
-
-          _handleDroppedFiles(event);
-
-        },
-
-        child: Container(
-
-          color: Colors.white,
-
-          child: Column(
-
-            children: [
-
-              // Header
-
-              Container(
-
-                color: const Color(0xFFEEEEEE),
-
-                padding: const EdgeInsets.symmetric(vertical: 4),
-
-                child: const Row(
-
-                  children: [
-
-                    SizedBox(width: 40), // Checkbox space
-
-                    Expanded(flex: 5, child: Text("Name", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
-
-                    Expanded(flex: 2, child: Text("Size", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
-
-                    Expanded(flex: 2, child: Text("Type", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
-
-                    Expanded(flex: 3, child: Text("Modified", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
-
-                  ],
-
-                ),
-
+                  Expanded(
+                      flex: 3,
+                      child: Text("Modified",
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 13))),
+                ],
               ),
+            ),
 
-              const Divider(height: 1),
+            const Divider(height: 1),
 
-              // List
+            // List
 
-              Expanded(
-
-                child: _isViewingArchive 
-
+            Expanded(
+              child: _isViewingArchive
                   ? ListView.builder(
-
-                      itemCount: _currentArchiveEntries.length + 1, // +1 for ".."
+                      itemCount:
+                          _currentArchiveEntries.length + 1, // +1 for ".."
 
                       itemBuilder: (context, index) {
-
                         if (index == 0) return _buildParentDirItem();
 
                         final entry = _currentArchiveEntries[index - 1];
 
                         return _buildArchiveEntryItem(entry);
-
                       },
-
                     )
-
                   : ListView.builder(
-
                       itemCount: _files.length + 1, // +1 for ".."
 
                       itemBuilder: (context, index) {
-
                         if (index == 0) return _buildParentDirItem();
 
                         final file = _files[index - 1];
 
                         return _buildFileItem(file);
-
                       },
-
                     ),
-
-              ),
-
-            ],
-
-          ),
-
+            ),
+          ],
         ),
+      ),
+    );
+  }
 
+  Future<void> _handleDroppedFiles(PerformDropEvent event) async {
+    final List<String> droppedPaths = [];
+
+    // Read all items
+
+    for (final item in event.session.items) {
+      final reader = item.dataReader;
+
+      if (reader != null) {
+        if (reader.canProvide(Formats.fileUri)) {
+          reader.getValue(Formats.fileUri, (uri) {
+            if (uri != null) droppedPaths.add(uri.toFilePath());
+          });
+        }
+      }
+    }
+
+    // Wait a bit for async callbacks to populate droppedPaths
+
+    // In a real robust app we'd use Completers, but for this simpler logic:
+
+    await Future.delayed(const Duration(milliseconds: 200));
+
+    if (droppedPaths.isEmpty) return;
+
+    if (_isViewingArchive) {
+      if (_archivePath == null) return;
+
+      // Auto-compress into current archive
+
+      _compressFilesToCurrentArchive(droppedPaths);
+    } else {
+      // Ask user what to do
+
+      if (!mounted) return;
+
+      showDialog(
+        context: context,
+        builder: (ctx) => SimpleDialog(
+          title: const Text("File Drop Action"),
+          children: [
+            SimpleDialogOption(
+              onPressed: () {
+                Navigator.pop(ctx);
+
+                _createArchiveFromDropped(droppedPaths);
+              },
+              child: const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8.0),
+                child: Row(children: [
+                  Icon(Icons.archive),
+                  SizedBox(width: 8),
+                  Text("Compress to Archive")
+                ]),
+              ),
+            ),
+            SimpleDialogOption(
+              onPressed: () {
+                Navigator.pop(ctx);
+
+                _copyFilesHere(droppedPaths);
+              },
+              child: const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8.0),
+                child: Row(children: [
+                  Icon(Icons.copy),
+                  SizedBox(width: 8),
+                  Text("Copy Here")
+                ]),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+
+  Future<void> _compressFilesToCurrentArchive(List<String> files) async {
+    // We strictly need 7z or zip for this. Dart archive lib is bad at 'updating' in place.
+
+    if (!_is7zAvailable) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text(
+                'Install "7z" (p7zip) to enable drag-and-drop compression updates.')),
       );
 
+      return;
     }
 
-  
+    String ext = p.extension(_archivePath!).toLowerCase();
 
-    Future<void> _handleDroppedFiles(PerformDropEvent event) async {
+    if (ext == '.rar') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Cannot add files to RAR archives (Read-only).')),
+      );
 
-      final List<String> droppedPaths = [];
-
-      
-
-      // Read all items
-
-      for (final item in event.session.items) {
-
-        final reader = item.dataReader;
-
-        if (reader != null) {
-
-          if (reader.canProvide(Formats.fileUri)) {
-
-            reader.getValue(Formats.fileUri, (uri) {
-
-              if (uri != null) droppedPaths.add(uri.toFilePath());
-
-            });
-
-          }
-
-        }
-
-      }
-
-      
-
-      // Wait a bit for async callbacks to populate droppedPaths
-
-      // In a real robust app we'd use Completers, but for this simpler logic:
-
-      await Future.delayed(const Duration(milliseconds: 200));
-
-  
-
-      if (droppedPaths.isEmpty) return;
-
-  
-
-      if (_isViewingArchive) {
-
-        if (_archivePath == null) return;
-
-        // Auto-compress into current archive
-
-        _compressFilesToCurrentArchive(droppedPaths);
-
-      } else {
-
-        // Ask user what to do
-
-        if (!mounted) return;
-
-        showDialog(
-
-          context: context,
-
-          builder: (ctx) => SimpleDialog(
-
-            title: const Text("File Drop Action"),
-
-            children: [
-
-              SimpleDialogOption(
-
-                onPressed: () {
-
-                  Navigator.pop(ctx);
-
-                  _createArchiveFromDropped(droppedPaths);
-
-                },
-
-                child: const Padding(
-
-                  padding: EdgeInsets.symmetric(vertical: 8.0),
-
-                  child: Row(children: [Icon(Icons.archive), SizedBox(width: 8), Text("Compress to Archive")]),
-
-                ),
-
-              ),
-
-              SimpleDialogOption(
-
-                onPressed: () {
-
-                  Navigator.pop(ctx);
-
-                  _copyFilesHere(droppedPaths);
-
-                },
-
-                child: const Padding(
-
-                  padding: EdgeInsets.symmetric(vertical: 8.0),
-
-                  child: Row(children: [Icon(Icons.copy), SizedBox(width: 8), Text("Copy Here")]),
-
-                ),
-
-              ),
-
-            ],
-
-          ),
-
-        );
-
-      }
-
+      return;
     }
 
-  
+    // Show Progress
 
-    Future<void> _compressFilesToCurrentArchive(List<String> files) async {
+    if (mounted) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => const Center(child: CircularProgressIndicator()),
+      );
+    }
 
-      // We strictly need 7z or zip for this. Dart archive lib is bad at 'updating' in place.
+    try {
+      // 7z u <archive_name> <files...>
 
-      if (!_is7zAvailable) {
+      final args = ['u', _archivePath!, ...files];
 
-         ScaffoldMessenger.of(context).showSnackBar(
+      final result = await Process.run(_7zExecutable, args);
 
-           const SnackBar(content: Text('Install "7z" (p7zip) to enable drag-and-drop compression updates.')),
+      if (mounted) Navigator.pop(context); // Close loading
 
-         );
-
-         return;
-
-      }
-
-  
-
-      String ext = p.extension(_archivePath!).toLowerCase();
-
-      if (ext == '.rar') {
-
-         ScaffoldMessenger.of(context).showSnackBar(
-
-           const SnackBar(content: Text('Cannot add files to RAR archives (Read-only).')),
-
-         );
-
-         return;
-
-      }
-
-  
-
-      // Show Progress
-
-      if (mounted) {
-
-        showDialog(
-
-          context: context,
-
-          barrierDismissible: false,
-
-          builder: (ctx) => const Center(child: CircularProgressIndicator()),
-
-        );
-
-      }
-
-  
-
-          try {
-
-  
-
-            // 7z u <archive_name> <files...>
-
-  
-
-            final args = ['u', _archivePath!, ...files];
-
-  
-
-            
-
-  
-
-            final result = await Process.run(_7zExecutable, args);
-
-  
-
-            
-
-  
-
-            if (mounted) Navigator.pop(context); // Close loading
-
-  
-
-        if (result.exitCode == 0) {
-
-          if (mounted) {
-
-            ScaffoldMessenger.of(context).showSnackBar(
-
-              const SnackBar(content: Text('Files added to archive successfully.')),
-
-            );
-
-          }
-
-          // Refresh view
-
-          _openArchive(_archivePath!); 
-
-        } else {
-
-          throw Exception(result.stderr);
-
-        }
-
-      } catch (e) {
-
-        if (mounted && Navigator.canPop(context)) Navigator.pop(context);
-
+      if (result.exitCode == 0) {
         if (mounted) {
-
           ScaffoldMessenger.of(context).showSnackBar(
-
-            SnackBar(content: Text('Failed to add files: $e')),
-
+            const SnackBar(
+                content: Text('Files added to archive successfully.')),
           );
-
         }
 
+        // Refresh view
+
+        _openArchive(_archivePath!);
+      } else {
+        throw Exception(result.stderr);
       }
-
-    }
-
-  
-
-    Future<void> _createArchiveFromDropped(List<String> files) async {
-
-      String defaultName = "NewArchive.zip";
-
-      if (files.length == 1) {
-
-        defaultName = "${p.basenameWithoutExtension(files.first)}.zip";
-
-      }
-
-      String? outputFile = await FilePicker.platform.saveFile(
-
-        dialogTitle: 'Create Archive',
-
-        fileName: defaultName,
-
-      );
-
-  
-
-      if (outputFile == null) return;
-
-  
+    } catch (e) {
+      if (mounted && Navigator.canPop(context)) Navigator.pop(context);
 
       if (mounted) {
-
-        showDialog(
-
-          context: context,
-
-          barrierDismissible: false,
-
-          builder: (ctx) => const Center(child: CircularProgressIndicator()),
-
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to add files: $e')),
         );
-
       }
+    }
+  }
 
-  
+  Future<void> _createArchiveFromDropped(List<String> files) async {
+    String defaultName = "NewArchive.zip";
 
-          try {
+    if (files.length == 1) {
+      defaultName = "${p.basenameWithoutExtension(files.first)}.zip";
+    }
 
-  
+    String? outputFile = await FilePicker.platform.saveFile(
+      dialogTitle: 'Create Archive',
+      fileName: defaultName,
+    );
 
-             // Prefer 7z if available
+    if (outputFile == null) return;
 
-  
+    if (mounted) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => const Center(child: CircularProgressIndicator()),
+      );
+    }
 
-             if (_is7zAvailable) {
+    try {
+      // Prefer 7z if available
 
-  
+      if (_is7zAvailable) {
+        final args = ['a', outputFile, ...files];
 
-                final args = ['a', outputFile, ...files];
+        await Process.run(_7zExecutable, args);
+      } else {
+        // Fallback to Dart archive
 
-  
+        final encoder = ZipFileEncoder();
 
-                await Process.run(_7zExecutable, args);
+        encoder.create(outputFile);
 
-  
-
-             } else {
-
-  
-
-                // Fallback to Dart archive
-
-            final encoder = ZipFileEncoder();
-
-            encoder.create(outputFile);
-
-            for (final path in files) {
-
-              if (FileSystemEntity.isDirectorySync(path)) {
-
-                encoder.addDirectory(Directory(path));
-
-              } else if (FileSystemEntity.isFileSync(path)) {
-
-                encoder.addFile(File(path));
-
-              }
-
-            }
-
-            encoder.close();
-
-         }
-
-  
-
-         if (mounted) Navigator.pop(context); // Close loading
-
-         _refreshFiles();
-
-      } catch (e) {
-
-         if (mounted) Navigator.pop(context); 
-
-         if (mounted) {
-
-          ScaffoldMessenger.of(context).showSnackBar(
-
-            SnackBar(content: Text('Failed to create archive: $e')),
-
-          );
-
+        for (final path in files) {
+          if (FileSystemEntity.isDirectorySync(path)) {
+            encoder.addDirectory(Directory(path));
+          } else if (FileSystemEntity.isFileSync(path)) {
+            encoder.addFile(File(path));
+          }
         }
 
+        encoder.close();
       }
 
+      if (mounted) Navigator.pop(context); // Close loading
+
+      _refreshFiles();
+    } catch (e) {
+      if (mounted) Navigator.pop(context);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to create archive: $e')),
+        );
+      }
+    }
+  }
+
+  void _copyFilesHere(List<String> files) {
+    for (final srcPath in files) {
+      try {
+        final filename = p.basename(srcPath);
+
+        final destPath = p.join(_currentPath, filename);
+
+        if (FileSystemEntity.isDirectorySync(srcPath)) {
+          // Simple recursive copy or warn
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text(
+                    'Folder copy not fully implemented in drag logic yet.')),
+          );
+        } else {
+          File(srcPath).copySync(destPath);
+        }
+      } catch (e) {
+        // ignore
+      }
     }
 
-  
-
-    void _copyFilesHere(List<String> files) {
-
-       for (final srcPath in files) {
-
-         try {
-
-           final filename = p.basename(srcPath);
-
-           final destPath = p.join(_currentPath, filename);
-
-           if (FileSystemEntity.isDirectorySync(srcPath)) {
-
-              // Simple recursive copy or warn
-
-               ScaffoldMessenger.of(context).showSnackBar(
-
-                const SnackBar(content: Text('Folder copy not fully implemented in drag logic yet.')),
-
-              );
-
-           } else {
-
-              File(srcPath).copySync(destPath);
-
-           }
-
-         } catch (e) {
-
-           // ignore
-
-         }
-
-       }
-
-       _refreshFiles();
-
-    }
+    _refreshFiles();
+  }
 
   Widget _buildParentDirItem() {
     return InkWell(
