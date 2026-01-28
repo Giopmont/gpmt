@@ -64,7 +64,11 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   // Archive viewing state
   bool _isViewingArchive = false;
   String? _archivePath;
-  List<ArchiveEntry> _currentArchiveEntries = [];
+  List<ArchiveEntry> _allArchiveEntries = []; // Todas as entradas do arquivo
+  List<ArchiveEntry> _currentArchiveEntries =
+      []; // Entradas filtradas pelo nível atual
+  String _archiveVirtualPath =
+      ''; // Caminho virtual dentro do arquivo (ex: "pasta1/subpasta/")
   InputFileStream? _archiveInputStream;
 
   // Temp dir for drag-and-drop cache
@@ -263,6 +267,116 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     });
   }
 
+  /// Filtra as entradas do arquivo para mostrar apenas o nível atual.
+  /// Imita o comportamento do WinRAR onde apenas itens do diretório atual são mostrados.
+  void _filterArchiveEntriesToCurrentLevel() {
+    if (!_isViewingArchive) return;
+
+    final Set<String> seenNames = {};
+    final List<ArchiveEntry> filtered = [];
+
+    for (final entry in _allArchiveEntries) {
+      String entryPath = entry.name;
+
+      // Normalizar path (remover trailing slash se existir)
+      if (entryPath.endsWith('/')) {
+        entryPath = entryPath.substring(0, entryPath.length - 1);
+      }
+
+      // Se estamos em um subdiretório, verificar se a entrada começa com esse caminho
+      if (_archiveVirtualPath.isNotEmpty) {
+        if (!entryPath.startsWith(_archiveVirtualPath)) {
+          continue; // Entrada não está no diretório atual
+        }
+        // Remover o prefixo do caminho virtual
+        entryPath = entryPath.substring(_archiveVirtualPath.length);
+      }
+
+      // Se o caminho ainda contém '/', significa que está em um subdiretório
+      final slashIndex = entryPath.indexOf('/');
+      if (slashIndex > 0) {
+        // É um item dentro de uma subpasta - criar entrada de pasta virtual
+        final folderName = entryPath.substring(0, slashIndex);
+        if (!seenNames.contains(folderName)) {
+          seenNames.add(folderName);
+          // Criar entrada de pasta virtual
+          filtered.add(ArchiveEntry(
+            name: folderName,
+            size: 0,
+            isDirectory: true,
+          ));
+        }
+      } else if (entryPath.isNotEmpty) {
+        // Item no nível atual
+        if (!seenNames.contains(entryPath)) {
+          seenNames.add(entryPath);
+          // Criar entrada com nome ajustado (apenas o basename)
+          filtered.add(ArchiveEntry(
+            name: entryPath,
+            size: entry.size,
+            dateModified: entry.dateModified,
+            dateCreated: entry.dateCreated,
+            isDirectory: entry.isDirectory,
+            compressionMethod: entry.compressionMethod,
+            compressedSize: entry.compressedSize,
+          ));
+        }
+      }
+    }
+
+    _currentArchiveEntries = filtered;
+  }
+
+  /// Navega para um subdiretório dentro do arquivo compactado.
+  void _navigateIntoArchiveFolder(String folderName) {
+    setState(() {
+      _archiveVirtualPath = '$_archiveVirtualPath$folderName/';
+      _filterArchiveEntriesToCurrentLevel();
+      _sortFiles();
+      _selectedPaths.clear();
+    });
+  }
+
+  /// Obtém o caminho completo de um item dentro do arquivo (incluindo o caminho virtual).
+  String _getFullArchivePath(String itemName) {
+    return '$_archiveVirtualPath$itemName';
+  }
+
+  /// Navega para cima dentro do arquivo compactado.
+  void _navigateUpInArchive() {
+    if (_archiveVirtualPath.isEmpty) {
+      // Já está na raiz do arquivo, sair do arquivo
+      setState(() {
+        _isViewingArchive = false;
+        _currentPath = p.dirname(_archivePath!);
+        _closeArchiveStream();
+        _archivePath = null;
+        _allArchiveEntries = [];
+        _currentArchiveEntries = [];
+        _archiveVirtualPath = '';
+      });
+      _refreshFiles();
+    } else {
+      // Voltar um nível dentro do arquivo
+      setState(() {
+        // Remover último segmento do caminho
+        String path = _archiveVirtualPath;
+        if (path.endsWith('/')) {
+          path = path.substring(0, path.length - 1);
+        }
+        final lastSlash = path.lastIndexOf('/');
+        if (lastSlash >= 0) {
+          _archiveVirtualPath = path.substring(0, lastSlash + 1);
+        } else {
+          _archiveVirtualPath = '';
+        }
+        _filterArchiveEntriesToCurrentLevel();
+        _sortFiles();
+        _selectedPaths.clear();
+      });
+    }
+  }
+
   void _sortFiles() {
     if (_isViewingArchive) {
       _currentArchiveEntries.sort((a, b) {
@@ -426,7 +540,9 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         _isViewingArchive = false;
         _closeArchiveStream();
         _archivePath = null;
-        _currentArchiveEntries = []; // Use _currentArchiveEntries here too
+        _allArchiveEntries = [];
+        _currentArchiveEntries = [];
+        _archiveVirtualPath = '';
       });
       _refreshFiles();
     } else {
@@ -442,15 +558,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
   void _navigateUp() {
     if (_isViewingArchive) {
-      // Exit archive view
-      setState(() {
-        _isViewingArchive = false;
-        _currentPath = p.dirname(_archivePath!);
-        _closeArchiveStream();
-        _archivePath = null;
-        _currentArchiveEntries = []; // Use _currentArchiveEntries here too
-      });
-      _refreshFiles();
+      _navigateUpInArchive();
     } else {
       final parent = Directory(_currentPath).parent;
       if (parent.path != _currentPath) {
@@ -471,7 +579,9 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       setState(() {
         _isViewingArchive = true;
         _archivePath = path;
+        _allArchiveEntries = [];
         _currentArchiveEntries = [];
+        _archiveVirtualPath = '';
         _archiveInputStream = null;
         _selectedPaths.clear();
       });
@@ -488,8 +598,10 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             final entries =
                 ArchiveParser.parse7zListing(result.stdout.toString());
             setState(() {
-              _currentArchiveEntries = entries;
+              _allArchiveEntries =
+                  entries.where((e) => e.name != path).toList();
             });
+            _filterArchiveEntriesToCurrentLevel();
             _sortFiles();
             return;
           }
@@ -548,8 +660,9 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
       final entries = ArchiveParser.parseUnrarListing(result.stdout.toString());
       setState(() {
-        _currentArchiveEntries = entries;
+        _allArchiveEntries = entries.where((e) => e.name != path).toList();
       });
+      _filterArchiveEntriesToCurrentLevel();
       _sortFiles();
       return;
     }
@@ -580,10 +693,12 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           setState(() {
             _isViewingArchive = true;
             _archivePath = path;
-            _currentArchiveEntries = entries;
+            _allArchiveEntries = entries.where((e) => e.name != path).toList();
+            _archiveVirtualPath = '';
             _archiveInputStream = null;
             _selectedPaths.clear();
           });
+          _filterArchiveEntriesToCurrentLevel();
           _sortFiles();
           return;
         }
@@ -600,10 +715,12 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       setState(() {
         _isViewingArchive = true;
         _archivePath = path;
-        _currentArchiveEntries = entries;
+        _allArchiveEntries = entries;
+        _archiveVirtualPath = '';
         _archiveInputStream = inputStream;
         _selectedPaths.clear();
       });
+      _filterArchiveEntriesToCurrentLevel();
       _sortFiles();
     } catch (e) {
       _closeArchiveStream();
@@ -768,7 +885,9 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       unrarArgs.add(sourceArchive);
 
       if (_isViewingArchive && _selectedPaths.isNotEmpty) {
-        unrarArgs.addAll(_selectedPaths.toList());
+        // Adicionar caminho virtual para obter o caminho completo
+        unrarArgs.addAll(
+            _selectedPaths.map((name) => _getFullArchivePath(name)).toList());
       }
       unrarArgs.add(outputDir);
 
@@ -818,7 +937,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       sourcePath: sourceArchive,
       destinationPath: outputDir,
       selectedFiles: (_isViewingArchive && _selectedPaths.isNotEmpty)
-          ? _selectedPaths.toList()
+          ? _selectedPaths.map((name) => _getFullArchivePath(name)).toList()
           : [],
       overwrite: overwriteChoice,
       useSystem7z: _binaryLocator.is7zAvailable,
@@ -988,6 +1107,9 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
       if (entry.isDirectory) return null;
 
+      // Obter o caminho completo do arquivo dentro do arquivo
+      final fullEntryPath = _getFullArchivePath(entry.name);
+
       final destPath = p.join(tempDir.path, p.basename(entry.name));
       final destFile = File(destPath);
 
@@ -1007,7 +1129,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
       // RAR usa unrar diretamente
       if (SupportedExtensions.isRar(_archivePath!)) {
-        final args = ['e', '-y', _archivePath!, entry.name, tempDir.path];
+        final args = ['e', '-y', _archivePath!, fullEntryPath, tempDir.path];
         final result = await Process.run(_binaryLocator.unrarExecutable, args);
 
         if (result.exitCode == 0 && destFile.existsSync()) {
@@ -1021,7 +1143,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       final task = ExtractTask(
         sourcePath: _archivePath!,
         destinationPath: tempDir.path,
-        selectedFiles: [entry.name],
+        selectedFiles: [fullEntryPath],
         overwrite: true,
         useSystem7z: _binaryLocator.is7zAvailable,
         custom7zExecutable: _binaryLocator.sevenZipExecutable,
@@ -1390,7 +1512,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
                   Expanded(
                     child: Text(
                       _isViewingArchive
-                          ? "$_archivePath (Archive)"
+                          ? "$_archivePath${_archiveVirtualPath.isNotEmpty ? '\\$_archiveVirtualPath' : ''}"
                           : _currentPath,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 13),
@@ -1898,7 +2020,11 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           size: sizeStr,
           isSelected: isSelected,
           onTap: () => _toggleSelection(name),
-          onDoubleTap: () {},
+          onDoubleTap: () {
+            if (isDir) {
+              _navigateIntoArchiveFolder(name);
+            }
+          },
           isEven: index % 2 == 0,
           nameWidth: nameWidth,
         ),

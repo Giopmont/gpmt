@@ -42,7 +42,7 @@ class ArchiveEntry {
     }
 
     return ArchiveEntry(
-      name: file.name,
+      name: file.name.replaceAll('\\', '/'),
       size: file.size,
       dateModified: modTime,
       dateCreated: modTime, // ZIP não tem data de criação separada
@@ -84,7 +84,8 @@ class ArchiveEntry {
   }
 
   @override
-  String toString() => 'ArchiveEntry(name: $name, size: $size, isDir: $isDirectory)';
+  String toString() =>
+      'ArchiveEntry(name: $name, size: $size, isDir: $isDirectory)';
 
   @override
   bool operator ==(Object other) =>

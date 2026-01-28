@@ -45,7 +45,7 @@ class ArchiveParser {
 
       switch (key) {
         case 'Path':
-          currentPath = value;
+          currentPath = value.replaceAll('\\', '/');
           break;
         case 'Size':
           currentSize = int.tryParse(value);
@@ -105,7 +105,7 @@ class ArchiveParser {
           final sizeStr = match.group(2)!;
           final dateStr = match.group(3)!;
           final timeStr = match.group(4)!;
-          final name = match.group(5)!.trim();
+          final name = match.group(5)!.trim().replaceAll('\\', '/');
 
           if (attr.startsWith('Attributes')) continue;
 
