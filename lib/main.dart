@@ -74,6 +74,10 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   // Temp dir for drag-and-drop cache
   Directory? _sessionTempDir;
 
+  // Workaround: delay DropRegion until Flutter engine is fully ready
+  // Fixes crash in release mode where FlutterView is nil during early initialization
+  bool _dropRegionReady = false;
+
   // Sorting
   int _sortColumn = 0; // 0=Name, 1=Created, 2=Modified, 3=Type, 4=Size
   bool _sortAscending = true;
@@ -115,6 +119,15 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     // Processar argumentos (requisições de abertura de arquivo)
     if (mounted) {
       _processArgs();
+    }
+
+    // Delay DropRegion initialization to avoid crash in release mode
+    // The super_native_extensions plugin crashes if FlutterView is not ready
+    await Future.delayed(const Duration(milliseconds: 500));
+    if (mounted) {
+      setState(() {
+        _dropRegionReady = true;
+      });
     }
   }
 
@@ -1613,6 +1626,98 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       1 + (_isViewingArchive ? _currentArchiveEntries.length : _files.length);
 
   Widget _buildFileList() {
+    final listContent = Container(
+      color: Colors.white,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final double availableWidth = constraints.maxWidth;
+          final double fixedColumnsWidth = _colWidthCreated +
+              _colWidthModified +
+              _colWidthType +
+              _colWidthSize;
+          final double minRequiredNameWidth = _colWidthName;
+
+          // Se houver espaço sobrando, expande a coluna Nome
+          // Se não, usa o tamanho definido pelo usuário e permite scroll horizontal
+          double renderNameWidth = minRequiredNameWidth;
+          if (availableWidth > fixedColumnsWidth + minRequiredNameWidth) {
+            renderNameWidth = availableWidth - fixedColumnsWidth;
+          }
+
+          // Largura total do conteúdo
+          final double totalContentWidth = renderNameWidth + fixedColumnsWidth;
+
+          return Column(
+            children: [
+              // Header
+              Container(
+                decoration: BoxDecoration(
+                  color: AppColors.tableHeaderBackground,
+                  border: const Border(
+                    bottom: BorderSide(color: AppColors.headerBorder, width: 1),
+                  ),
+                ),
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  controller: _headerScrollController,
+                  physics: const ClampingScrollPhysics(),
+                  child: SizedBox(
+                    width: totalContentWidth,
+                    child: _buildDataTableHeader(nameWidth: renderNameWidth),
+                  ),
+                ),
+              ),
+
+              // Lista virtualizada
+              Expanded(
+                child: Scrollbar(
+                  controller: _headerScrollController,
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    controller: _headerScrollController,
+                    physics: const ClampingScrollPhysics(),
+                    child: SizedBox(
+                      width: totalContentWidth,
+                      child: ListView.builder(
+                        itemCount: _itemCount,
+                        itemExtent: 32,
+                        itemBuilder: (context, index) {
+                          if (index == 0) {
+                            return _buildParentDirRow(
+                                nameWidth: renderNameWidth);
+                          }
+                          final realIndex = index - 1;
+                          if (_isViewingArchive) {
+                            return _buildArchiveEntryRow(
+                              _currentArchiveEntries[realIndex],
+                              realIndex,
+                              nameWidth: renderNameWidth,
+                            );
+                          } else {
+                            return _buildFileRow(
+                              _files[realIndex],
+                              realIndex,
+                              nameWidth: renderNameWidth,
+                            );
+                          }
+                        },
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    // Workaround: Only wrap with DropRegion after Flutter engine is fully ready
+    // to avoid crash in release mode caused by FlutterView being nil
+    if (!_dropRegionReady) {
+      return listContent;
+    }
+
     return DropRegion(
       formats: Formats.standardFormats,
       onDropOver: (event) {
@@ -1621,93 +1726,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       onPerformDrop: (event) async {
         _handleDroppedFiles(event);
       },
-      child: Container(
-        color: Colors.white,
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final double availableWidth = constraints.maxWidth;
-            final double fixedColumnsWidth = _colWidthCreated +
-                _colWidthModified +
-                _colWidthType +
-                _colWidthSize;
-            final double minRequiredNameWidth = _colWidthName;
-
-            // Se houver espaço sobrando, expande a coluna Nome
-            // Se não, usa o tamanho definido pelo usuário e permite scroll horizontal
-            double renderNameWidth = minRequiredNameWidth;
-            if (availableWidth > fixedColumnsWidth + minRequiredNameWidth) {
-              renderNameWidth = availableWidth - fixedColumnsWidth;
-            }
-
-            // Largura total do conteúdo
-            final double totalContentWidth =
-                renderNameWidth + fixedColumnsWidth;
-
-            return Column(
-              children: [
-                // Header
-                Container(
-                  decoration: BoxDecoration(
-                    color: AppColors.tableHeaderBackground,
-                    border: const Border(
-                      bottom:
-                          BorderSide(color: AppColors.headerBorder, width: 1),
-                    ),
-                  ),
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    controller: _headerScrollController,
-                    physics: const ClampingScrollPhysics(),
-                    child: SizedBox(
-                      width: totalContentWidth,
-                      child: _buildDataTableHeader(nameWidth: renderNameWidth),
-                    ),
-                  ),
-                ),
-
-                // Lista virtualizada
-                Expanded(
-                  child: Scrollbar(
-                    controller: _headerScrollController,
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      controller: _headerScrollController,
-                      physics: const ClampingScrollPhysics(),
-                      child: SizedBox(
-                        width: totalContentWidth,
-                        child: ListView.builder(
-                          itemCount: _itemCount,
-                          itemExtent: 32,
-                          itemBuilder: (context, index) {
-                            if (index == 0) {
-                              return _buildParentDirRow(
-                                  nameWidth: renderNameWidth);
-                            }
-                            final realIndex = index - 1;
-                            if (_isViewingArchive) {
-                              return _buildArchiveEntryRow(
-                                _currentArchiveEntries[realIndex],
-                                realIndex,
-                                nameWidth: renderNameWidth,
-                              );
-                            } else {
-                              return _buildFileRow(
-                                _files[realIndex],
-                                realIndex,
-                                nameWidth: renderNameWidth,
-                              );
-                            }
-                          },
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-      ),
+      child: listContent,
     );
   }
 
