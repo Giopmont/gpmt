@@ -2100,9 +2100,15 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           size: sizeStr,
           isSelected: isSelected,
           onTap: () => _toggleSelection(name),
-          onDoubleTap: () {
+          onDoubleTap: () async {
             if (isDir) {
               _navigateIntoArchiveFolder(name);
+            } else {
+              // Extract file to temp and open with default application
+              final extractedPath = await _extractFileForDrag(entry);
+              if (extractedPath != null) {
+                OpenFilex.open(extractedPath);
+              }
             }
           },
           isEven: index % 2 == 0,
