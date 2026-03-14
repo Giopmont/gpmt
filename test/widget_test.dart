@@ -8,18 +8,20 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:gpmt/main.dart';
+import 'package:gpmt/utils/constants.dart';
 
 void main() {
   testWidgets('WinRAR app smoke test', (WidgetTester tester) async {
     // Build our app and trigger a frame.
-    await tester.pumpWidget(const WinRARApp());
+    await tester.pumpWidget(const WinRARApp(enableBackgroundInit: false));
+    await tester.pump();
 
-    // Verify that the toolbar exists (e.g. "Add" button text)
-    expect(find.text('Add'), findsOneWidget);
-    expect(find.text('Extract To'), findsOneWidget);
-    
+    // Verify that the toolbar exists.
+    expect(find.text(AppStrings.add), findsOneWidget);
+    expect(find.text(AppStrings.extractToLabel), findsOneWidget);
+
     // Verify column headers
-    expect(find.text('Name'), findsOneWidget);
-    expect(find.text('Size'), findsOneWidget);
+    expect(find.textContaining(AppStrings.colName), findsOneWidget);
+    expect(find.textContaining(AppStrings.colSize), findsOneWidget);
   });
 }

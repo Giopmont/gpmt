@@ -24,9 +24,26 @@ void main(List<String> args) {
 // Singleton para localização de binários
 final _binaryLocator = BinaryLocator();
 
+class _ArchiveCommandAttempt {
+  final ProcessResult? result;
+  final String? password;
+  final bool cancelled;
+
+  const _ArchiveCommandAttempt({
+    this.result,
+    this.password,
+    this.cancelled = false,
+  });
+}
+
 class WinRARApp extends StatelessWidget {
   final List<String> args;
-  const WinRARApp({super.key, this.args = const []});
+  final bool enableBackgroundInit;
+  const WinRARApp({
+    super.key,
+    this.args = const [],
+    this.enableBackgroundInit = true,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -38,14 +55,22 @@ class WinRARApp extends StatelessWidget {
         fontFamily: 'Segoe UI', // Attempt to look like Windows
         scaffoldBackgroundColor: const Color(0xFFF0F0F0),
       ),
-      home: WinRARMainScreen(args: args),
+      home: WinRARMainScreen(
+        args: args,
+        enableBackgroundInit: enableBackgroundInit,
+      ),
     );
   }
 }
 
 class WinRARMainScreen extends StatefulWidget {
   final List<String> args;
-  const WinRARMainScreen({super.key, this.args = const []});
+  final bool enableBackgroundInit;
+  const WinRARMainScreen({
+    super.key,
+    this.args = const [],
+    this.enableBackgroundInit = true,
+  });
 
   @override
   State<WinRARMainScreen> createState() => _WinRARMainScreenState();
@@ -64,6 +89,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   // Archive viewing state
   bool _isViewingArchive = false;
   String? _archivePath;
+  String? _archivePassword;
   List<ArchiveEntry> _allArchiveEntries = []; // Todas as entradas do arquivo
   List<ArchiveEntry> _currentArchiveEntries =
       []; // Entradas filtradas pelo nível atual
@@ -99,7 +125,9 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     super.initState();
 
     // Initialize _currentPath to user's home directory
-    _currentPath = Platform.environment['HOME'] ?? Directory.current.path;
+    _currentPath = Platform.environment['HOME'] ??
+        Platform.environment['USERPROFILE'] ??
+        Directory.current.path;
     debugPrint('Initial _currentPath: $_currentPath');
     debugPrint(
         'GPMT Version: 1.0.2 (Race Fix) - Build Time: ${DateTime.now()}');
@@ -109,7 +137,11 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     _setupFileHandlerChannel();
 
     // Start initialization sequence
-    _initApp();
+    if (widget.enableBackgroundInit) {
+      _initApp();
+    } else {
+      _dropRegionReady = true;
+    }
   }
 
   Future<void> _initApp() async {
@@ -275,7 +307,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       try {
         return entity.statSync();
       } catch (_) {
-        return FileStat.statSync('/dev/null'); // Fallback
+        return Directory.systemTemp.statSync();
       }
     });
   }
@@ -364,6 +396,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         _currentPath = p.dirname(_archivePath!);
         _closeArchiveStream();
         _archivePath = null;
+        _archivePassword = null;
         _allArchiveEntries = [];
         _currentArchiveEntries = [];
         _archiveVirtualPath = '';
@@ -480,7 +513,6 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   }
 
   @override
-  @override
   void dispose() {
     _closeArchiveStream();
     _cleanupSessionTempDir();
@@ -553,6 +585,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         _isViewingArchive = false;
         _closeArchiveStream();
         _archivePath = null;
+        _archivePassword = null;
         _allArchiveEntries = [];
         _currentArchiveEntries = [];
         _archiveVirtualPath = '';
@@ -584,42 +617,206 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     return SupportedExtensions.isArchive(path);
   }
 
+  String _sevenZipPasswordArg(String? password) {
+    if (password == null || password.isEmpty) {
+      return '-p-';
+    }
+    return '-p$password';
+  }
+
+  String _unrarPasswordArg(String? password) {
+    if (password == null || password.isEmpty) {
+      return '-p-';
+    }
+    return '-p$password';
+  }
+
+  String _archiveCommandOutput(ProcessResult result) {
+    final stderr = result.stderr.toString().trim();
+    final stdout = result.stdout.toString().trim();
+    if (stderr.isNotEmpty && stdout.isNotEmpty) {
+      return '$stderr\n$stdout';
+    }
+    return stderr.isNotEmpty ? stderr : stdout;
+  }
+
+  bool _archiveResultNeedsPassword(ProcessResult result) {
+    final output = _archiveCommandOutput(result).toLowerCase();
+    return output.contains('enter password') ||
+        output.contains('wrong password') ||
+        output.contains('incorrect password') ||
+        output.contains('encrypted headers') ||
+        output.contains('encrypted archive') ||
+        output.contains('password is incorrect');
+  }
+
+  Future<String?> _promptArchivePassword({
+    required String archivePath,
+    bool retry = false,
+  }) async {
+    if (!mounted) return null;
+
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: Text(retry ? 'Senha incorreta' : 'Arquivo protegido'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              retry
+                  ? 'A senha informada nao abriu o arquivo.'
+                  : 'Informe a senha para abrir o arquivo.',
+            ),
+            const SizedBox(height: 8),
+            Text(
+              p.basename(archivePath),
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'Senha',
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (value) {
+                final trimmed = value.trim();
+                Navigator.pop(ctx, trimmed.isEmpty ? null : value);
+              },
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final value = controller.text;
+              final trimmed = value.trim();
+              Navigator.pop(ctx, trimmed.isEmpty ? null : value);
+            },
+            child: const Text('Continuar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<_ArchiveCommandAttempt> _runArchiveCommandWithPasswordRetry({
+    required String executable,
+    required List<String> Function(String? password) buildArgs,
+    required String archivePath,
+    String? initialPassword,
+  }) async {
+    String? password = initialPassword;
+    bool prompted = false;
+
+    while (true) {
+      final result = await Process.run(executable, buildArgs(password));
+      if (result.exitCode == 0) {
+        final normalized =
+            (password != null && password.isNotEmpty) ? password : null;
+        return _ArchiveCommandAttempt(
+          result: result,
+          password: normalized,
+        );
+      }
+
+      if (!_archiveResultNeedsPassword(result)) {
+        return _ArchiveCommandAttempt(
+          result: result,
+          password: (password != null && password.isNotEmpty) ? password : null,
+        );
+      }
+
+      final nextPassword = await _promptArchivePassword(
+        archivePath: archivePath,
+        retry: prompted || (password != null && password.isNotEmpty),
+      );
+      if (nextPassword == null) {
+        return const _ArchiveCommandAttempt(cancelled: true);
+      }
+
+      password = nextPassword;
+      prompted = true;
+    }
+  }
+
+  void _applyOpenedArchive({
+    required String path,
+    required List<ArchiveEntry> entries,
+    String? password,
+  }) {
+    setState(() {
+      _isViewingArchive = true;
+      _archivePath = path;
+      _archivePassword = password;
+      _allArchiveEntries = entries;
+      _archiveVirtualPath = '';
+      _archiveInputStream = null;
+      _selectedPaths.clear();
+    });
+    _filterArchiveEntriesToCurrentLevel();
+    _sortFiles();
+  }
+
   Future<void> _openArchive(String path) async {
     final ext = p.extension(path).toLowerCase();
+    final initialPassword = path == _archivePath ? _archivePassword : null;
 
     // RAR handling
     if (ext == '.rar') {
-      setState(() {
-        _isViewingArchive = true;
-        _archivePath = path;
-        _allArchiveEntries = [];
-        _currentArchiveEntries = [];
-        _archiveVirtualPath = '';
-        _archiveInputStream = null;
-        _selectedPaths.clear();
-      });
-
-      // Tentar com 7z primeiro (mais informações)
       if (_binaryLocator.is7zAvailable) {
-        try {
-          final result = await Process.run(
-            _binaryLocator.sevenZipExecutable,
-            ['l', '-slt', path],
-          );
+        final attempt = await _runArchiveCommandWithPasswordRetry(
+          executable: _binaryLocator.sevenZipExecutable,
+          archivePath: path,
+          initialPassword: initialPassword,
+          buildArgs: (password) =>
+              ['l', '-slt', _sevenZipPasswordArg(password), path],
+        );
+        if (attempt.cancelled) {
+          return;
+        }
 
-          if (result.exitCode == 0) {
-            final entries =
-                ArchiveParser.parse7zListing(result.stdout.toString());
-            setState(() {
-              _allArchiveEntries =
-                  entries.where((e) => e.name != path).toList();
-            });
-            _filterArchiveEntriesToCurrentLevel();
-            _sortFiles();
+        final result = attempt.result!;
+        if (result.exitCode == 0) {
+          final entries =
+              ArchiveParser.parse7zListing(result.stdout.toString());
+          _applyOpenedArchive(
+            path: path,
+            entries: entries.where((e) => e.name != path).toList(),
+            password: attempt.password,
+          );
+          return;
+        }
+
+        if (!_binaryLocator.isUnrarAvailable) {
+          if (mounted) {
+            showDialog(
+              context: context,
+              builder: (ctx) => AlertDialog(
+                title: Text(AppStrings.errorOpenArchive),
+                content: Text(
+                  'Falha ao listar conteudo RAR: ${_archiveCommandOutput(result)}',
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text("OK"),
+                  )
+                ],
+              ),
+            );
             return;
           }
-        } catch (e) {
-          debugPrint("7z RAR listing falhou, usando unrar: $e");
         }
       }
 
@@ -647,18 +844,27 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         return;
       }
 
-      final result = await Process.run(
-        _binaryLocator.unrarExecutable,
-        ['l', '-c-', path],
+      final attempt = await _runArchiveCommandWithPasswordRetry(
+        executable: _binaryLocator.unrarExecutable,
+        archivePath: path,
+        initialPassword: initialPassword,
+        buildArgs: (password) =>
+            ['l', '-c-', _unrarPasswordArg(password), path],
       );
+      if (attempt.cancelled) {
+        return;
+      }
 
+      final result = attempt.result!;
       if (result.exitCode != 0) {
         if (mounted) {
           showDialog(
             context: context,
             builder: (ctx) => AlertDialog(
               title: Text(AppStrings.errorOpenArchive),
-              content: Text("Falha ao listar conteúdo RAR: ${result.stderr}"),
+              content: Text(
+                'Falha ao listar conteudo RAR: ${_archiveCommandOutput(result)}',
+              ),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(ctx),
@@ -672,18 +878,19 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       }
 
       final entries = ArchiveParser.parseUnrarListing(result.stdout.toString());
-      setState(() {
-        _allArchiveEntries = entries.where((e) => e.name != path).toList();
-      });
-      _filterArchiveEntriesToCurrentLevel();
-      _sortFiles();
+      _applyOpenedArchive(
+        path: path,
+        entries: entries.where((e) => e.name != path).toList(),
+        password: attempt.password,
+      );
       return;
     }
 
     // Outros tipos de arquivo (Zip, Tar, Gz)
+    InputFileStream? inputStream;
     try {
       _closeArchiveStream();
-      final inputStream = InputFileStream(path);
+      inputStream = InputFileStream(path);
       Archive archive;
 
       if (ext == '.zip' || ext == '.zipx' || ext == '.zi') {
@@ -695,27 +902,31 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         throw Exception("Visualização GZip/TGZ não implementada ainda");
       } else if (ext == '.7z' && _binaryLocator.is7zAvailable) {
         inputStream.close();
-        // Usar 7z para listar arquivos .7z
-        final result = await Process.run(
-          _binaryLocator.sevenZipExecutable,
-          ['l', '-slt', path],
+        final attempt = await _runArchiveCommandWithPasswordRetry(
+          executable: _binaryLocator.sevenZipExecutable,
+          archivePath: path,
+          initialPassword: initialPassword,
+          buildArgs: (password) =>
+              ['l', '-slt', _sevenZipPasswordArg(password), path],
         );
+        if (attempt.cancelled) {
+          return;
+        }
+
+        final result = attempt.result!;
         if (result.exitCode == 0) {
           final entries =
               ArchiveParser.parse7zListing(result.stdout.toString());
-          setState(() {
-            _isViewingArchive = true;
-            _archivePath = path;
-            _allArchiveEntries = entries.where((e) => e.name != path).toList();
-            _archiveVirtualPath = '';
-            _archiveInputStream = null;
-            _selectedPaths.clear();
-          });
-          _filterArchiveEntriesToCurrentLevel();
-          _sortFiles();
+          _applyOpenedArchive(
+            path: path,
+            entries: entries.where((e) => e.name != path).toList(),
+            password: attempt.password,
+          );
           return;
         }
-        throw Exception("Falha ao listar arquivo 7z");
+        throw Exception(
+          'Falha ao listar arquivo 7z: ${_archiveCommandOutput(result)}',
+        );
       } else {
         inputStream.close();
         throw Exception("Formato não suportado: $ext");
@@ -724,18 +935,24 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       // Converter ArchiveFile para ArchiveEntry
       final entries =
           archive.files.map((f) => ArchiveEntry.fromArchiveFile(f)).toList();
+      inputStream.close();
+      inputStream = null;
 
       setState(() {
         _isViewingArchive = true;
         _archivePath = path;
+        _archivePassword = null;
         _allArchiveEntries = entries;
         _archiveVirtualPath = '';
-        _archiveInputStream = inputStream;
+        _archiveInputStream = null;
         _selectedPaths.clear();
       });
       _filterArchiveEntriesToCurrentLevel();
       _sortFiles();
     } catch (e) {
+      try {
+        inputStream?.close();
+      } catch (_) {}
       _closeArchiveStream();
       if (mounted) {
         showDialog(
@@ -867,6 +1084,9 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
     if (overwriteChoice == null) return;
 
+    final initialPassword =
+        sourceArchive == _archivePath ? _archivePassword : null;
+
     // Check RAR
     if (p.extension(sourceArchive).toLowerCase() == '.rar') {
       if (!_binaryLocator.isUnrarAvailable) {
@@ -888,76 +1108,98 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         return;
       }
 
-      final List<String> unrarArgs = ['x'];
-      if (overwriteChoice) {
-        unrarArgs.add('-o+'); // Overwrite all
-      } else {
-        unrarArgs.add('-o-'); // Skip existing
-      }
+      bool loadingVisible = false;
+      String? password = initialPassword;
 
-      unrarArgs.add(sourceArchive);
-
-      if (_isViewingArchive && _selectedPaths.isNotEmpty) {
-        // Adicionar caminho virtual para obter o caminho completo
-        unrarArgs.addAll(
-            _selectedPaths.map((name) => _getFullArchivePath(name)).toList());
-      }
-      unrarArgs.add(outputDir);
-
-      // Show loading dialog for RAR
-      if (mounted) {
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (ctx) => const Center(child: CircularProgressIndicator()),
-        );
-      }
-
-      try {
-        final result =
-            await Process.run(_binaryLocator.unrarExecutable, unrarArgs);
-
-        if (mounted) Navigator.pop(context); // Close loading
-
-        if (result.exitCode == 0) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Extracted RAR to $outputDir')),
-            );
-          }
+      while (true) {
+        final List<String> unrarArgs = ['x', _unrarPasswordArg(password)];
+        if (overwriteChoice) {
+          unrarArgs.add('-o+'); // Overwrite all
         } else {
+          unrarArgs.add('-o-'); // Skip existing
+        }
+
+        unrarArgs.add(sourceArchive);
+
+        if (_isViewingArchive && _selectedPaths.isNotEmpty) {
+          unrarArgs.addAll(
+            _selectedPaths.map((name) => _getFullArchivePath(name)).toList(),
+          );
+        }
+        unrarArgs.add(outputDir);
+
+        try {
+          if (mounted && !loadingVisible) {
+            showDialog(
+              context: context,
+              barrierDismissible: false,
+              builder: (ctx) =>
+                  const Center(child: CircularProgressIndicator()),
+            );
+            loadingVisible = true;
+          }
+
+          final result =
+              await Process.run(_binaryLocator.unrarExecutable, unrarArgs);
+
+          if (loadingVisible && mounted) {
+            Navigator.pop(context);
+            loadingVisible = false;
+          }
+
+          if (result.exitCode == 0) {
+            _archivePassword =
+                (password != null && password.isNotEmpty) ? password : null;
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Extracted RAR to $outputDir')),
+              );
+            }
+            break;
+          }
+
+          if (_archiveResultNeedsPassword(result)) {
+            final nextPassword = await _promptArchivePassword(
+              archivePath: sourceArchive,
+              retry: password != null && password.isNotEmpty,
+            );
+            if (nextPassword == null) {
+              return;
+            }
+            password = nextPassword;
+            continue;
+          }
+
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                  content: Text('RAR extraction failed: ${result.stderr}')),
+                content: Text(
+                  'RAR extraction failed: ${_archiveCommandOutput(result)}',
+                ),
+              ),
             );
           }
-        }
-      } catch (e) {
-        if (mounted) Navigator.pop(context); // Close loading
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('RAR extraction failed: $e')),
-          );
+          return;
+        } catch (e) {
+          if (loadingVisible && mounted) {
+            Navigator.pop(context);
+            loadingVisible = false;
+          }
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('RAR extraction failed: $e')),
+            );
+          }
+          return;
         }
       }
       return;
     }
 
     // Other archive types extraction (Zip/Tar) via Isolate
-    final receivePort = ReceivePort();
-    final task = ExtractTask(
-      sourcePath: sourceArchive,
-      destinationPath: outputDir,
-      selectedFiles: (_isViewingArchive && _selectedPaths.isNotEmpty)
-          ? _selectedPaths.map((name) => _getFullArchivePath(name)).toList()
-          : [],
-      overwrite: overwriteChoice,
-      useSystem7z: _binaryLocator.is7zAvailable,
-      custom7zExecutable: _binaryLocator.sevenZipExecutable,
-      flatten: false,
-      sendPort: receivePort.sendPort,
-    );
+    final selectedFiles = (_isViewingArchive && _selectedPaths.isNotEmpty)
+        ? _selectedPaths.map((name) => _getFullArchivePath(name)).toList()
+        : <String>[];
 
     // Progress State
     ValueNotifier<double> progressNotifier = ValueNotifier(0.0);
@@ -1000,25 +1242,115 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       );
     }
 
-    try {
-      await Isolate.spawn(extractWorker, task);
+    String? password =
+        SupportedExtensions.is7z(sourceArchive) ? initialPassword : null;
 
-      await for (final message in receivePort) {
-        if (message is Map) {
-          if (message['type'] == 'progress') {
-            final filename = message['filename'];
-            final current = message['current'];
-            final total = message['total'];
-            statusNotifier.value = "Extracting $filename ($current/$total)";
-            if (total > 0) {
-              progressNotifier.value = current / total;
+    try {
+      while (true) {
+        final receivePort = ReceivePort();
+        final task = ExtractTask(
+          sourcePath: sourceArchive,
+          destinationPath: outputDir,
+          selectedFiles: selectedFiles,
+          overwrite: overwriteChoice,
+          useSystem7z: _binaryLocator.is7zAvailable,
+          flatten: false,
+          custom7zExecutable: _binaryLocator.sevenZipExecutable,
+          password: password,
+          sendPort: receivePort.sendPort,
+        );
+
+        Object? extractionError;
+        await Isolate.spawn(extractWorker, task);
+
+        await for (final message in receivePort) {
+          if (message is Map) {
+            if (message['type'] == 'progress') {
+              final filename = message['filename'];
+              final current = message['current'];
+              final total = message['total'];
+              statusNotifier.value = "Extracting $filename ($current/$total)";
+              if (total > 0) {
+                progressNotifier.value = current / total;
+              }
+            } else if (message['type'] == 'done') {
+              extractionError = null;
+              break;
+            } else if (message['type'] == 'error') {
+              extractionError = message['message'];
+              break;
             }
-          } else if (message['type'] == 'done') {
-            break;
-          } else if (message['type'] == 'error') {
-            throw Exception(message['message']);
           }
         }
+        receivePort.close();
+
+        if (extractionError == null) {
+          _archivePassword =
+              (password != null && password.isNotEmpty) ? password : null;
+          break;
+        }
+
+        final errorText = extractionError.toString();
+        if (SupportedExtensions.is7z(sourceArchive) &&
+            _archiveResultNeedsPassword(
+              ProcessResult(0, 1, '', errorText),
+            )) {
+          if (mounted) {
+            Navigator.pop(context);
+          }
+
+          final nextPassword = await _promptArchivePassword(
+            archivePath: sourceArchive,
+            retry: password != null && password.isNotEmpty,
+          );
+          if (nextPassword == null) {
+            return;
+          }
+
+          password = nextPassword;
+          progressNotifier.value = 0.0;
+          statusNotifier.value = "Preparing...";
+
+          if (mounted) {
+            showDialog(
+              context: context,
+              barrierDismissible: false,
+              builder: (ctx) => PopScope(
+                canPop: false,
+                child: Dialog(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20.0),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text("Extracting...",
+                            style: TextStyle(fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 20),
+                        ValueListenableBuilder<double>(
+                          valueListenable: progressNotifier,
+                          builder: (context, value, child) =>
+                              LinearProgressIndicator(
+                                  value: value > 0 ? value : null),
+                        ),
+                        const SizedBox(height: 10),
+                        ValueListenableBuilder<String>(
+                          valueListenable: statusNotifier,
+                          builder: (context, value, child) => Text(value,
+                              textAlign: TextAlign.center,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }
+          continue;
+        }
+
+        throw Exception(errorText);
       }
 
       if (mounted) Navigator.pop(context); // Close loading
@@ -1035,8 +1367,6 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           SnackBar(content: Text('Extraction failed: $e')),
         );
       }
-    } finally {
-      receivePort.close();
     }
   }
 
@@ -1142,39 +1472,98 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
       // RAR usa unrar diretamente
       if (SupportedExtensions.isRar(_archivePath!)) {
-        final args = ['e', '-y', _archivePath!, fullEntryPath, tempDir.path];
-        final result = await Process.run(_binaryLocator.unrarExecutable, args);
+        String? password = _archivePassword;
+        while (true) {
+          final args = [
+            'e',
+            '-y',
+            _unrarPasswordArg(password),
+            _archivePath!,
+            fullEntryPath,
+            tempDir.path,
+          ];
+          final result =
+              await Process.run(_binaryLocator.unrarExecutable, args);
 
-        if (result.exitCode == 0 && destFile.existsSync()) {
-          return destPath;
+          if (result.exitCode == 0 && destFile.existsSync()) {
+            _archivePassword =
+                (password != null && password.isNotEmpty) ? password : null;
+            return destPath;
+          }
+
+          if (!_archiveResultNeedsPassword(result)) {
+            return null;
+          }
+
+          final nextPassword = await _promptArchivePassword(
+            archivePath: _archivePath!,
+            retry: password != null && password.isNotEmpty,
+          );
+          if (nextPassword == null) {
+            return null;
+          }
+          password = nextPassword;
         }
-        return null;
       }
 
       // Outros formatos usam Isolate
-      final receivePort = ReceivePort();
-      final task = ExtractTask(
-        sourcePath: _archivePath!,
-        destinationPath: tempDir.path,
-        selectedFiles: [fullEntryPath],
-        overwrite: true,
-        useSystem7z: _binaryLocator.is7zAvailable,
-        custom7zExecutable: _binaryLocator.sevenZipExecutable,
-        flatten: true,
-        sendPort: receivePort.sendPort,
-      );
+      String? password =
+          SupportedExtensions.is7z(_archivePath!) ? _archivePassword : null;
 
-      await Isolate.spawn(extractWorker, task);
+      while (true) {
+        final receivePort = ReceivePort();
+        final task = ExtractTask(
+          sourcePath: _archivePath!,
+          destinationPath: tempDir.path,
+          selectedFiles: [fullEntryPath],
+          overwrite: true,
+          useSystem7z: _binaryLocator.is7zAvailable,
+          custom7zExecutable: _binaryLocator.sevenZipExecutable,
+          flatten: true,
+          password: password,
+          sendPort: receivePort.sendPort,
+        );
 
-      await for (final message in receivePort) {
-        if (message is Map) {
-          if (message['type'] == 'done') break;
-          if (message['type'] == 'error') throw Exception(message['message']);
+        Object? extractionError;
+        await Isolate.spawn(extractWorker, task);
+
+        await for (final message in receivePort) {
+          if (message is Map) {
+            if (message['type'] == 'done') {
+              extractionError = null;
+              break;
+            }
+            if (message['type'] == 'error') {
+              extractionError = message['message'];
+              break;
+            }
+          }
         }
-      }
-      receivePort.close();
+        receivePort.close();
 
-      return destPath;
+        if (extractionError == null) {
+          _archivePassword =
+              (password != null && password.isNotEmpty) ? password : null;
+          return destPath;
+        }
+
+        final errorText = extractionError.toString();
+        if (!SupportedExtensions.is7z(_archivePath!) ||
+            !_archiveResultNeedsPassword(
+              ProcessResult(0, 1, '', errorText),
+            )) {
+          throw Exception(errorText);
+        }
+
+        final nextPassword = await _promptArchivePassword(
+          archivePath: _archivePath!,
+          retry: password != null && password.isNotEmpty,
+        );
+        if (nextPassword == null) {
+          return null;
+        }
+        password = nextPassword;
+      }
     } catch (e) {
       debugPrint('Erro ao extrair para drag: $e');
     }
@@ -1348,23 +1737,23 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     if (confirm != true) return;
 
     if (ext == '.rar') {
-      if (!_binaryLocator.isUnrarAvailable) {
+      if (!_binaryLocator.isRarAvailable) {
         if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(const SnackBar(content: Text('unrar not found.')));
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('rar não encontrado.')),
+          );
         }
         return;
       }
 
-      // unrar r <archive> <path_to_save_fixed>
-      // unrar usually fixes in place or creates 'fixed.arcname.rar'
+      // rar r <archive>
       try {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('Attempting repair...')));
         }
         final result =
-            await Process.run(_binaryLocator.unrarExecutable, ['r', path]);
+            await Process.run(_binaryLocator.rarExecutable, ['r', path]);
         if (mounted) {
           if (result.exitCode == 0) {
             _showInfoDialog("Repair Complete", "Output:\n${result.stdout}");
@@ -1547,15 +1936,19 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         scrollDirection: Axis.horizontal,
         child: Row(
           children: [
-            _toolbarButton(Icons.add_box, "Add", _addToArchive),
-            _toolbarButton(Icons.unarchive, "Extract To", _extractSelected),
-            _toolbarButton(Icons.check_circle_outline, "Test", () {}),
-            _toolbarButton(Icons.remove_red_eye_outlined, "View", () {}),
-            _toolbarButton(Icons.delete_outline, "Delete", _deleteSelected),
-            _toolbarButton(Icons.search, "Find", () {}),
-            _toolbarButton(Icons.auto_fix_high, "Wizard", _showWizard),
-            _toolbarButton(Icons.info_outline, "Info", _showInfo),
-            _toolbarButton(Icons.build_circle_outlined, "Repair", _showRepair),
+            _toolbarButton(Icons.add_box, AppStrings.add, _addToArchive),
+            _toolbarButton(
+                Icons.unarchive, AppStrings.extractToLabel, _extractSelected),
+            _toolbarButton(Icons.check_circle_outline, AppStrings.test, () {}),
+            _toolbarButton(
+                Icons.remove_red_eye_outlined, AppStrings.view, () {}),
+            _toolbarButton(
+                Icons.delete_outline, AppStrings.delete, _deleteSelected),
+            _toolbarButton(Icons.search, AppStrings.find, () {}),
+            _toolbarButton(Icons.auto_fix_high, AppStrings.wizard, _showWizard),
+            _toolbarButton(Icons.info_outline, AppStrings.info, _showInfo),
+            _toolbarButton(
+                Icons.build_circle_outlined, AppStrings.repair, _showRepair),
           ],
         ),
       ),
@@ -1733,23 +2126,25 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   Widget _buildDataTableHeader({double? nameWidth}) {
     return Row(
       children: [
-        _buildHeaderCell('Nome', 0, nameWidth ?? _colWidthName, (delta) {
+        _buildHeaderCell(AppStrings.colName, 0, nameWidth ?? _colWidthName,
+            (delta) {
           setState(
               () => _colWidthName = (_colWidthName + delta).clamp(100, 1000));
         }),
-        _buildHeaderCell('Criado', 1, _colWidthCreated, (delta) {
+        _buildHeaderCell(AppStrings.colCreated, 1, _colWidthCreated, (delta) {
           setState(() =>
               _colWidthCreated = (_colWidthCreated + delta).clamp(80, 250));
         }),
-        _buildHeaderCell('Modificado', 2, _colWidthModified, (delta) {
+        _buildHeaderCell(AppStrings.colModified, 2, _colWidthModified, (delta) {
           setState(() =>
               _colWidthModified = (_colWidthModified + delta).clamp(80, 250));
         }),
-        _buildHeaderCell('Tipo', 3, _colWidthType, (delta) {
+        _buildHeaderCell(AppStrings.colType, 3, _colWidthType, (delta) {
           setState(
               () => _colWidthType = (_colWidthType + delta).clamp(60, 200));
         }),
-        _buildHeaderCell('Tamanho', 4, _colWidthSize, null, isLast: true),
+        _buildHeaderCell(AppStrings.colSize, 4, _colWidthSize, null,
+            isLast: true),
       ],
     );
   }

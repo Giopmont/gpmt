@@ -12,6 +12,7 @@ class ExtractTask {
   final bool useSystem7z;
   final bool flatten;
   final String? custom7zExecutable;
+  final String? password;
   final SendPort? sendPort;
 
   ExtractTask({
@@ -22,6 +23,7 @@ class ExtractTask {
     this.useSystem7z = false,
     this.flatten = false,
     this.custom7zExecutable,
+    this.password,
     this.sendPort,
   });
 }
@@ -33,11 +35,7 @@ void extractWorker(ExtractTask task) async {
       await _extractWith7z(task);
       return;
     } catch (e) {
-      if (task.sendPort != null) {
-        task.sendPort!
-            .send({'type': 'error', 'message': '7z failed, falling back: $e'});
-      }
-      // Fallback to Dart implementation below
+      // Tenta a extração nativa abaixo antes de reportar falha ao processo pai.
     }
   }
 
@@ -118,6 +116,12 @@ Future<void> _extractWith7z(ExtractTask task) async {
   // Use 'e' (extract here) if flatten is true, otherwise 'x' (extract with full paths)
   final command = task.flatten ? 'e' : 'x';
   final args = [command, task.sourcePath, '-o${task.destinationPath}'];
+
+  if (task.password != null && task.password!.isNotEmpty) {
+    args.add('-p${task.password}');
+  } else {
+    args.add('-p-');
+  }
 
   // Overwrite mode
   if (task.overwrite) {

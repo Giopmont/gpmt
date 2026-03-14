@@ -28,6 +28,34 @@ class BinaryLocator {
   bool get isRarAvailable => _isRarAvailable;
   String get unrarErrorDetails => _unrarErrorDetails;
 
+  List<String> _candidateExecutables(List<String> baseNames) {
+    if (!Platform.isWindows) return baseNames;
+
+    final candidates = <String>[];
+    for (final name in baseNames) {
+      candidates.add(name);
+      if (!name.toLowerCase().endsWith('.exe')) {
+        candidates.add('$name.exe');
+      }
+    }
+    return candidates;
+  }
+
+  Future<bool> _canRunExecutable(
+    String executable,
+    List<String> args, {
+    Set<int> validExitCodes = const {0},
+    bool allowNonEmptyStdout = false,
+  }) async {
+    try {
+      final result = await Process.run(executable, args);
+      return validExitCodes.contains(result.exitCode) ||
+          (allowNonEmptyStdout && result.stdout.toString().trim().isNotEmpty);
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Inicializa a detecção de todos os binários.
   Future<void> initialize() async {
     await Future.wait([
@@ -70,26 +98,24 @@ class BinaryLocator {
     }
 
     // Fallback para sistema - tentar múltiplos caminhos
-    final systemPaths = [
-      '/opt/homebrew/bin/7z',
-      '/opt/homebrew/bin/7za',
-      '/usr/local/bin/7z',
-      '/usr/local/bin/7za',
-      '7z',
-      '7za',
-    ];
+    final systemPaths = Platform.isWindows
+        ? _candidateExecutables(['7z', '7za'])
+        : [
+            '/opt/homebrew/bin/7z',
+            '/opt/homebrew/bin/7za',
+            '/usr/local/bin/7z',
+            '/usr/local/bin/7za',
+            '7z',
+            '7za',
+          ];
 
     for (final path in systemPaths) {
-      try {
-        final result = await Process.run(path, ['i']);
-        if (result.exitCode == 0 || result.exitCode == 255) {
-          _is7zAvailable = true;
-          _sevenZipExecutable = path;
-          debugPrint('7z encontrado (sistema): $path');
-          return;
-        }
-      } catch (e) {
-        // Tentar próximo caminho
+      if (await _canRunExecutable(path, ['i'],
+          validExitCodes: const {0, 255})) {
+        _is7zAvailable = true;
+        _sevenZipExecutable = path;
+        debugPrint('7z encontrado (sistema): $path');
+        return;
       }
     }
     debugPrint('7z não encontrado no sistema');
@@ -140,38 +166,43 @@ class BinaryLocator {
     }
 
     // Fallback para sistema
-    try {
-      final result = await Process.run('which', ['unrar']);
-      if (result.exitCode == 0) {
+    for (final candidate in _candidateExecutables(['unrar'])) {
+      if (await _canRunExecutable(
+        candidate,
+        const [],
+        validExitCodes: const {0, 7},
+        allowNonEmptyStdout: true,
+      )) {
         _isUnrarAvailable = true;
-        _unrarExecutable = 'unrar';
+        _unrarExecutable = candidate;
         _unrarErrorDetails = '';
-        debugPrint('unrar encontrado (sistema)');
-      } else {
-        if (_unrarErrorDetails.isEmpty) {
-          _unrarErrorDetails =
-              'unrar não encontrado no sistema (which retornou ${result.exitCode})';
-        }
+        debugPrint('unrar encontrado (sistema): $candidate');
+        return;
       }
-    } catch (e) {
-      if (_unrarErrorDetails.isEmpty) {
-        _unrarErrorDetails = 'Verificação do sistema falhou: $e';
-      }
+    }
+
+    if (_unrarErrorDetails.isEmpty) {
+      _unrarErrorDetails = 'unrar não encontrado no sistema.';
     }
   }
 
   /// Verifica disponibilidade do rar (via system path, pois é licença proprietária/shareware).
   Future<void> _checkRarAvailability() async {
-    try {
-      final result = await Process.run('which', ['rar']);
-      if (result.exitCode == 0) {
+    for (final candidate in _candidateExecutables(['rar'])) {
+      if (await _canRunExecutable(
+        candidate,
+        const [],
+        validExitCodes: const {0, 7},
+        allowNonEmptyStdout: true,
+      )) {
         _isRarAvailable = true;
-        _rarExecutable = 'rar';
-        debugPrint('rar found (system)');
+        _rarExecutable = candidate;
+        debugPrint('rar found (system): $candidate');
+        return;
       }
-    } catch (e) {
-      debugPrint('rar not found in system');
     }
+
+    debugPrint('rar not found in system');
   }
 
   /// Extrai um binário dos assets para o diretório de suporte do app.
