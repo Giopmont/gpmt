@@ -172,4 +172,10 @@ Este repositório inclui documentação específica para assistentes:
 
 ## Licença
 
-Este repositório ainda não possui licença definida. Antes de publicar como projeto open source, adicione um arquivo `LICENSE` compatível com o modelo de distribuição desejado.
+O código-fonte original do GPMT está licenciado sob a licença MIT. Veja [LICENSE](LICENSE).
+
+Importante:
+
+- componentes de terceiros mantêm suas próprias licenças
+- binários empacotados como `7z` e `UnRAR` não passam automaticamente a ser MIT
+- detalhes adicionais estão em [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
