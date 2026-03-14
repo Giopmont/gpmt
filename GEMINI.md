@@ -1,40 +1,37 @@
-# Gemini Context & Project Guidelines
+# GEMINI.md
 
-## Idioma obrigatório
-**PT-BR em respostas, mensagens de UI e labels.**  
-Sem inglês em strings visíveis ao usuário.
+Leia `AGENTS.md` como fonte principal de contexto do projeto.
 
-## Project Overview
-**Name:** GPMT (WinRAR-like Archive Manager)  
-**Framework:** Flutter (Linux/macOS Desktop)  
-**Goal:** Gerenciador de arquivos e compactador/extração com UX retro e operações reais.
+## Papel Deste Arquivo
 
-## Core Technologies
-- **Flutter/Dart:** UI e lógica.
-- **Isolates:** extração/compactação em background (`lib/worker.dart`) para evitar travamentos.
-- **External Tools:**
-  - `unrar`: obrigatório para RAR (lista/extração).
-  - `7z` (p7zip): preferido para ZIP/7Z (performance e Zip64).
-  - **Empacotados:** binários podem vir de `assets/bin/linux|macos/`.
-- **UI:** estilo retro (Windows 95/XP).
-- **Drag & Drop:** `super_drag_and_drop`, com extração para temp antes de concluir drop.
+Este documento acrescenta notas específicas para uso com Gemini, mantendo `AGENTS.md` como base canônica.
 
-## Essential Instructions
-1. **Null Safety:** evite `!` sem guarda explícita.
-2. **Plataformas:** Linux e macOS. Trate permissões e paths corretamente.
-3. **Estado:** `setState` em `main.dart` (simples, direto).
-4. **Erros:** nunca travar; `try-catch` e feedback ao usuário.
-5. **Performance:** use `Isolate` em extrações; considere async em diretórios grandes.
-6. **Estilo de código:** camelCase; `main.dart` UI, `worker.dart` tarefas pesadas; comentários explicam o porquê.
+## Diretrizes
 
-## Comportamentos Conhecidos
-- **Drag & Drop:** modo “flatten” para arquivos individuais extraídos de dentro do archive.
-- **Arquivos como pastas:** `_isViewingArchive` simula navegação interna.
+- Produzir respostas e documentação em PT-BR.
+- Não deixar strings visíveis ao usuário em inglês, salvo quando forem nomes técnicos inevitáveis.
+- Priorizar clareza arquitetural e comportamento previsível.
+- Ao sugerir refatorações, preferir etapas incrementais em vez de reescritas amplas.
+- Ao revisar UX, considerar Linux e macOS como plataformas de primeira classe.
 
-## Integrações
-- **macOS:** `AppDelegate.swift` envia arquivo aberto via channel `com.gpmt/file_handler`.
-- **Linux:** `linux/gpmt.desktop` fornece ação “Extract Here (GPMT)”.
+## Áreas Sensíveis
 
-## Debugging
-- Use `ScaffoldMessenger` para feedback rápido.
-- Logs devem ser úteis e concisos.
+- fluxos com senha
+- extração em background
+- integração com binários externos
+- drag and drop com arquivos temporários
+- scripts de build e instalação
+
+## Validação Recomendada
+
+```bash
+flutter analyze
+flutter test
+```
+
+Quando a mudança tocar empacotamento ou distribuição:
+
+```bash
+flutter build linux --release
+./tool/install_desktop.sh --skip-build
+```

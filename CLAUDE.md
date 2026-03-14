@@ -1,31 +1,30 @@
-# Claude Context & Project Guidelines
+# CLAUDE.md
 
-## Project: GPMT (WinRAR-like Archive Manager)
+Leia `AGENTS.md` antes de propor ou aplicar qualquer mudança.
 
-### Idioma obrigatório
-* **Todas as respostas e mudanças devem estar em PT-BR.**
-* **Textos de UI, mensagens de erro e rótulos devem ser PT-BR.**
+## Papel Deste Arquivo
 
-### Tech Stack
-* **Flutter (Desktop: Linux/macOS)**.
-* **Shell/Process:** depende de binários `unrar` e `7z` (system ou empacotados em `assets/bin/...`).
-* **Concorrência:** `Isolate` para I/O pesado.
+Este documento adiciona observações específicas para uso com Claude. O contexto compartilhado do projeto fica em `AGENTS.md`.
 
-### Arquitetura
-1. **Isolates:** extração em `lib/worker.dart`; UI (`lib/main.dart`) apenas orquestra.
-2. **Navegação:** `_currentPath` = FS real; `_archivePath` + `_isViewingArchive` = navegação virtual em arquivo.
-3. **Drag & Drop:** `super_drag_and_drop`, extração “just-in-time” para temp ao arrastar para fora do arquivo.
-4. **Integrações nativas:**
-   - macOS: `AppDelegate.swift` envia arquivo via channel `com.gpmt/file_handler`.
-   - Linux: `.desktop` define “Open” e ação “Extract Here (GPMT)”.
+## Diretrizes
 
-### Padrões de Código
-* **Null Safety:** evite `!` sem guarda explícita.
-* **UX:** comportamento similar ao WinRAR (modais, status bar, feedback).
-* **I/O:** operações grandes sempre async/isolate.
-* **Paths:** suporte a Linux/macOS, tratar permissões e symlinks com cuidado.
+- Responder e documentar em PT-BR.
+- Manter todo texto de UI em PT-BR.
+- Em mudanças grandes, começar por um plano curto e objetivo.
+- Ao revisar código, dar prioridade a regressões de UX, I/O bloqueante e compatibilidade Linux/macOS.
+- Em documentação, escrever para público externo com linguagem clara e sem texto de template.
 
-### Lógica Crítica
-* **RAR:** somente `unrar` CLI.
-* **ZIP/TAR:** use `7z` quando disponível; fallback `archive` para casos simples.
-* **Fallback de binários:** preferir empacotados quando presentes e marcados como executáveis.
+## Pontos de Atenção
+
+- Não tratar fluxo de senha por prompt de terminal.
+- Não assumir que `RAR` pode ser manipulado sem CLI apropriada.
+- Não substituir comportamento desktop por abstrações genéricas sem ganho real.
+
+## Validação Esperada
+
+Quando houver alteração funcional:
+
+```bash
+flutter analyze
+flutter test
+```
