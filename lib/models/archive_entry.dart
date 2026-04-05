@@ -1,6 +1,8 @@
 import 'package:archive/archive.dart';
 import 'package:path/path.dart' as p;
 
+import '../utils/constants.dart';
+
 /// Modelo unificado para entradas de arquivo (ZIP, RAR, TAR, etc.)
 class ArchiveEntry {
   final String name;
@@ -29,9 +31,9 @@ class ArchiveEntry {
 
   /// Tipo de arquivo formatado para exibição.
   String get typeDescription {
-    if (isDirectory) return 'Pasta';
-    if (extension.isEmpty) return 'Arquivo';
-    return '${extension.substring(1).toUpperCase()} File';
+    if (isDirectory) return AppStrings.typeFolder;
+    if (extension.isEmpty) return AppStrings.typeFile;
+    return '${extension.substring(1).toUpperCase()} ${AppStrings.typeFile.toLowerCase()}';
   }
 
   /// Cria ArchiveEntry a partir de ArchiveFile (pacote archive).

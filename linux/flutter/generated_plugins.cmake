@@ -3,7 +3,6 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
-  gtk
   irondash_engine_context
   super_native_extensions
 )

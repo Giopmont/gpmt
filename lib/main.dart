@@ -1,45 +1,31 @@
 import 'dart:io';
-import 'dart:isolate';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:archive/archive_io.dart';
 import 'package:path/path.dart' as p;
 import 'package:intl/intl.dart';
 import 'package:filesize/filesize.dart';
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 import 'package:open_filex/open_filex.dart';
-import 'worker.dart';
 import 'services/binary_locator.dart';
-import 'services/archive_parser.dart';
+import 'services/archive_service.dart';
 import 'models/archive_entry.dart';
 import 'utils/icon_helper.dart';
 import 'utils/constants.dart';
 
 void main(List<String> args) {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(WinRARApp(args: args));
+  runApp(GpmtApp(args: args));
 }
 
 // Singleton para localização de binários
 final _binaryLocator = BinaryLocator();
+final _archiveService = ArchiveService(_binaryLocator);
 
-class _ArchiveCommandAttempt {
-  final ProcessResult? result;
-  final String? password;
-  final bool cancelled;
-
-  const _ArchiveCommandAttempt({
-    this.result,
-    this.password,
-    this.cancelled = false,
-  });
-}
-
-class WinRARApp extends StatelessWidget {
+class GpmtApp extends StatelessWidget {
   final List<String> args;
   final bool enableBackgroundInit;
-  const WinRARApp({
+  const GpmtApp({
     super.key,
     this.args = const [],
     this.enableBackgroundInit = true,
@@ -48,14 +34,14 @@ class WinRARApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'WinRAR Replica',
+      title: AppStrings.appTitle,
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         primarySwatch: Colors.blue,
         fontFamily: 'Segoe UI', // Attempt to look like Windows
         scaffoldBackgroundColor: const Color(0xFFF0F0F0),
       ),
-      home: WinRARMainScreen(
+      home: GpmtMainScreen(
         args: args,
         enableBackgroundInit: enableBackgroundInit,
       ),
@@ -63,22 +49,22 @@ class WinRARApp extends StatelessWidget {
   }
 }
 
-class WinRARMainScreen extends StatefulWidget {
+class GpmtMainScreen extends StatefulWidget {
   final List<String> args;
   final bool enableBackgroundInit;
-  const WinRARMainScreen({
+  const GpmtMainScreen({
     super.key,
     this.args = const [],
     this.enableBackgroundInit = true,
   });
 
   @override
-  State<WinRARMainScreen> createState() => _WinRARMainScreenState();
+  State<GpmtMainScreen> createState() => _GpmtMainScreenState();
 }
 
 // RarEntry foi movido para models/archive_entry.dart como ArchiveEntry
 
-class _WinRARMainScreenState extends State<WinRARMainScreen> {
+class _GpmtMainScreenState extends State<GpmtMainScreen> {
   late String _currentPath;
   List<FileSystemEntity> _files = [];
   final Set<String> _selectedPaths = {};
@@ -95,8 +81,6 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       []; // Entradas filtradas pelo nível atual
   String _archiveVirtualPath =
       ''; // Caminho virtual dentro do arquivo (ex: "pasta1/subpasta/")
-  InputFileStream? _archiveInputStream;
-
   // Temp dir for drag-and-drop cache
   Directory? _sessionTempDir;
 
@@ -178,7 +162,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     });
   }
 
-  // DISABLED - Using native AppDelegate instead of app_links package
+  // Desabilitado: usando AppDelegate nativo em vez de plugin de deep link.
   /*
   void _initDeepLinks() {
     // Handle deep links / file open requests (macOS)
@@ -313,7 +297,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   }
 
   /// Filtra as entradas do arquivo para mostrar apenas o nível atual.
-  /// Imita o comportamento do WinRAR onde apenas itens do diretório atual são mostrados.
+  /// Mostra apenas itens do diretório virtual atual dentro do compactado.
   void _filterArchiveEntriesToCurrentLevel() {
     if (!_isViewingArchive) return;
 
@@ -394,7 +378,6 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       setState(() {
         _isViewingArchive = false;
         _currentPath = p.dirname(_archivePath!);
-        _closeArchiveStream();
         _archivePath = null;
         _archivePassword = null;
         _allArchiveEntries = [];
@@ -514,7 +497,6 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
   @override
   void dispose() {
-    _closeArchiveStream();
     _cleanupSessionTempDir();
     _headerScrollController.dispose();
     super.dispose();
@@ -528,15 +510,6 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     } catch (e) {
       // Ignore cleanup errors
     }
-  }
-
-  void _closeArchiveStream() {
-    try {
-      _archiveInputStream?.close();
-    } catch (e) {
-      // Silent error
-    }
-    _archiveInputStream = null;
   }
 
   void _refreshFiles() {
@@ -583,7 +556,6 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       setState(() {
         _currentPath = path;
         _isViewingArchive = false;
-        _closeArchiveStream();
         _archivePath = null;
         _archivePassword = null;
         _allArchiveEntries = [];
@@ -617,39 +589,6 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     return SupportedExtensions.isArchive(path);
   }
 
-  String _sevenZipPasswordArg(String? password) {
-    if (password == null || password.isEmpty) {
-      return '-p-';
-    }
-    return '-p$password';
-  }
-
-  String _unrarPasswordArg(String? password) {
-    if (password == null || password.isEmpty) {
-      return '-p-';
-    }
-    return '-p$password';
-  }
-
-  String _archiveCommandOutput(ProcessResult result) {
-    final stderr = result.stderr.toString().trim();
-    final stdout = result.stdout.toString().trim();
-    if (stderr.isNotEmpty && stdout.isNotEmpty) {
-      return '$stderr\n$stdout';
-    }
-    return stderr.isNotEmpty ? stderr : stdout;
-  }
-
-  bool _archiveResultNeedsPassword(ProcessResult result) {
-    final output = _archiveCommandOutput(result).toLowerCase();
-    return output.contains('enter password') ||
-        output.contains('wrong password') ||
-        output.contains('incorrect password') ||
-        output.contains('encrypted headers') ||
-        output.contains('encrypted archive') ||
-        output.contains('password is incorrect');
-  }
-
   Future<String?> _promptArchivePassword({
     required String archivePath,
     bool retry = false,
@@ -661,15 +600,17 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       context: context,
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
-        title: Text(retry ? 'Senha incorreta' : 'Arquivo protegido'),
+        title: Text(
+          retry ? AppStrings.incorrectPassword : AppStrings.archiveProtected,
+        ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
               retry
-                  ? 'A senha informada nao abriu o arquivo.'
-                  : 'Informe a senha para abrir o arquivo.',
+                  ? AppStrings.promptArchivePasswordRetry
+                  : AppStrings.promptArchivePassword,
             ),
             const SizedBox(height: 8),
             Text(
@@ -682,7 +623,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
               autofocus: true,
               obscureText: true,
               decoration: const InputDecoration(
-                labelText: 'Senha',
+                labelText: AppStrings.password,
                 border: OutlineInputBorder(),
               ),
               onSubmitted: (value) {
@@ -695,7 +636,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, null),
-            child: const Text('Cancelar'),
+            child: const Text(AppStrings.cancel),
           ),
           ElevatedButton(
             onPressed: () {
@@ -703,51 +644,11 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
               final trimmed = value.trim();
               Navigator.pop(ctx, trimmed.isEmpty ? null : value);
             },
-            child: const Text('Continuar'),
+            child: const Text(AppStrings.continueLabel),
           ),
         ],
       ),
     );
-  }
-
-  Future<_ArchiveCommandAttempt> _runArchiveCommandWithPasswordRetry({
-    required String executable,
-    required List<String> Function(String? password) buildArgs,
-    required String archivePath,
-    String? initialPassword,
-  }) async {
-    String? password = initialPassword;
-    bool prompted = false;
-
-    while (true) {
-      final result = await Process.run(executable, buildArgs(password));
-      if (result.exitCode == 0) {
-        final normalized =
-            (password != null && password.isNotEmpty) ? password : null;
-        return _ArchiveCommandAttempt(
-          result: result,
-          password: normalized,
-        );
-      }
-
-      if (!_archiveResultNeedsPassword(result)) {
-        return _ArchiveCommandAttempt(
-          result: result,
-          password: (password != null && password.isNotEmpty) ? password : null,
-        );
-      }
-
-      final nextPassword = await _promptArchivePassword(
-        archivePath: archivePath,
-        retry: prompted || (password != null && password.isNotEmpty),
-      );
-      if (nextPassword == null) {
-        return const _ArchiveCommandAttempt(cancelled: true);
-      }
-
-      password = nextPassword;
-      prompted = true;
-    }
   }
 
   void _applyOpenedArchive({
@@ -761,7 +662,6 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       _archivePassword = password;
       _allArchiveEntries = entries;
       _archiveVirtualPath = '';
-      _archiveInputStream = null;
       _selectedPaths.clear();
     });
     _filterArchiveEntriesToCurrentLevel();
@@ -769,206 +669,49 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   }
 
   Future<void> _openArchive(String path) async {
-    final ext = p.extension(path).toLowerCase();
-    final initialPassword = path == _archivePath ? _archivePassword : null;
+    String? password = path == _archivePath ? _archivePassword : null;
 
-    // RAR handling
-    if (ext == '.rar') {
-      if (_binaryLocator.is7zAvailable) {
-        final attempt = await _runArchiveCommandWithPasswordRetry(
-          executable: _binaryLocator.sevenZipExecutable,
-          archivePath: path,
-          initialPassword: initialPassword,
-          buildArgs: (password) =>
-              ['l', '-slt', _sevenZipPasswordArg(password), path],
-        );
-        if (attempt.cancelled) {
-          return;
-        }
-
-        final result = attempt.result!;
-        if (result.exitCode == 0) {
-          final entries =
-              ArchiveParser.parse7zListing(result.stdout.toString());
-          _applyOpenedArchive(
-            path: path,
-            entries: entries.where((e) => e.name != path).toList(),
-            password: attempt.password,
-          );
-          return;
-        }
-
-        if (!_binaryLocator.isUnrarAvailable) {
-          if (mounted) {
-            showDialog(
-              context: context,
-              builder: (ctx) => AlertDialog(
-                title: Text(AppStrings.errorOpenArchive),
-                content: Text(
-                  'Falha ao listar conteudo RAR: ${_archiveCommandOutput(result)}',
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(ctx),
-                    child: const Text("OK"),
-                  )
-                ],
-              ),
-            );
-            return;
-          }
-        }
-      }
-
-      // Fallback para unrar
-      if (!_binaryLocator.isUnrarAvailable) {
-        if (mounted) {
-          showDialog(
-            context: context,
-            builder: (ctx) => AlertDialog(
-              title: Text(AppStrings.unrarNotFound),
-              content: Text(
-                "Para abrir arquivos RAR, instale 'unrar' ou 'p7zip-full'.\n\n"
-                "${_binaryLocator.getInstallInstructions()}\n\n"
-                "Detalhes: ${_binaryLocator.unrarErrorDetails}",
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  child: const Text("OK"),
-                )
-              ],
-            ),
-          );
-        }
-        return;
-      }
-
-      final attempt = await _runArchiveCommandWithPasswordRetry(
-        executable: _binaryLocator.unrarExecutable,
-        archivePath: path,
-        initialPassword: initialPassword,
-        buildArgs: (password) =>
-            ['l', '-c-', _unrarPasswordArg(password), path],
-      );
-      if (attempt.cancelled) {
-        return;
-      }
-
-      final result = attempt.result!;
-      if (result.exitCode != 0) {
-        if (mounted) {
-          showDialog(
-            context: context,
-            builder: (ctx) => AlertDialog(
-              title: Text(AppStrings.errorOpenArchive),
-              content: Text(
-                'Falha ao listar conteudo RAR: ${_archiveCommandOutput(result)}',
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  child: const Text("OK"),
-                )
-              ],
-            ),
-          );
-        }
-        return;
-      }
-
-      final entries = ArchiveParser.parseUnrarListing(result.stdout.toString());
-      _applyOpenedArchive(
+    while (true) {
+      final result = await _archiveService.listArchive(
         path: path,
-        entries: entries.where((e) => e.name != path).toList(),
-        password: attempt.password,
+        password: password,
       );
-      return;
-    }
 
-    // Outros tipos de arquivo (Zip, Tar, Gz)
-    InputFileStream? inputStream;
-    try {
-      _closeArchiveStream();
-      inputStream = InputFileStream(path);
-      Archive archive;
-
-      if (ext == '.zip' || ext == '.zipx' || ext == '.zi') {
-        archive = ZipDecoder().decodeBuffer(inputStream);
-      } else if (ext == '.tar') {
-        archive = TarDecoder().decodeBuffer(inputStream);
-      } else if (ext == '.gz' || ext == '.tgz') {
-        inputStream.close();
-        throw Exception("Visualização GZip/TGZ não implementada ainda");
-      } else if (ext == '.7z' && _binaryLocator.is7zAvailable) {
-        inputStream.close();
-        final attempt = await _runArchiveCommandWithPasswordRetry(
-          executable: _binaryLocator.sevenZipExecutable,
-          archivePath: path,
-          initialPassword: initialPassword,
-          buildArgs: (password) =>
-              ['l', '-slt', _sevenZipPasswordArg(password), path],
+      if (result.isSuccess) {
+        _applyOpenedArchive(
+          path: path,
+          entries: result.entries,
+          password: password,
         );
-        if (attempt.cancelled) {
-          return;
-        }
-
-        final result = attempt.result!;
-        if (result.exitCode == 0) {
-          final entries =
-              ArchiveParser.parse7zListing(result.stdout.toString());
-          _applyOpenedArchive(
-            path: path,
-            entries: entries.where((e) => e.name != path).toList(),
-            password: attempt.password,
-          );
-          return;
-        }
-        throw Exception(
-          'Falha ao listar arquivo 7z: ${_archiveCommandOutput(result)}',
-        );
-      } else {
-        inputStream.close();
-        throw Exception("Formato não suportado: $ext");
+        return;
       }
 
-      // Converter ArchiveFile para ArchiveEntry
-      final entries =
-          archive.files.map((f) => ArchiveEntry.fromArchiveFile(f)).toList();
-      inputStream.close();
-      inputStream = null;
-
-      setState(() {
-        _isViewingArchive = true;
-        _archivePath = path;
-        _archivePassword = null;
-        _allArchiveEntries = entries;
-        _archiveVirtualPath = '';
-        _archiveInputStream = null;
-        _selectedPaths.clear();
-      });
-      _filterArchiveEntriesToCurrentLevel();
-      _sortFiles();
-    } catch (e) {
-      try {
-        inputStream?.close();
-      } catch (_) {}
-      _closeArchiveStream();
-      if (mounted) {
+      if (!result.requiresPassword) {
+        if (!mounted) return;
         showDialog(
           context: context,
           builder: (ctx) => AlertDialog(
             title: Text(AppStrings.errorOpenArchive),
-            content: Text(e.toString()),
+            content: Text(result.errorMessage ?? AppStrings.errorGeneric),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx),
-                child: const Text("OK"),
+                child: const Text(AppStrings.ok),
               )
             ],
           ),
         );
+        return;
       }
+
+      final nextPassword = await _promptArchivePassword(
+        archivePath: path,
+        retry: password != null && password.isNotEmpty,
+      );
+      if (nextPassword == null) {
+        return;
+      }
+      password = nextPassword;
     }
   }
 
@@ -994,8 +737,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-                content: Text(
-                    'Please select a single archive or open one to extract.')),
+              content: Text(AppStrings.errorSelectSingleArchiveToExtract),
+            ),
           );
         }
         return;
@@ -1015,12 +758,12 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           final TextEditingController controller =
               TextEditingController(text: defaultDest);
           return AlertDialog(
-            title: const Text("Extract To"),
+            title: const Text(AppStrings.extractTo),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text("Destination path:"),
+                const Text(AppStrings.destinationPath),
                 const SizedBox(height: 8),
                 Row(
                   children: [
@@ -1049,11 +792,11 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context, null),
-                child: const Text("Cancel"),
+                child: const Text(AppStrings.cancel),
               ),
               ElevatedButton(
                 onPressed: () => Navigator.pop(context, controller.text),
-                child: const Text("Extract"),
+                child: const Text(AppStrings.extract),
               ),
             ],
           );
@@ -1066,18 +809,18 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     final bool? overwriteChoice = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text("Extraction Options"),
-        content: const Text("How should existing files be handled?"),
+        title: const Text(AppStrings.extractOptions),
+        content: const Text('Como os arquivos existentes devem ser tratados?'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, null),
-              child: const Text("Cancel")),
+              child: const Text(AppStrings.cancel)),
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text("Skip Existing")),
+              child: const Text(AppStrings.skipExisting)),
           TextButton(
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text("Overwrite All")),
+              child: const Text(AppStrings.overwriteAll)),
         ],
       ),
     );
@@ -1094,13 +837,12 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           showDialog(
             context: context,
             builder: (ctx) => AlertDialog(
-              title: const Text("Unrar Not Found"),
-              content: const Text(
-                  "To extract RAR files, please install 'unrar' on your system."),
+              title: const Text(AppStrings.unrarNotFound),
+              content: const Text(AppStrings.errorRarExtractionToolUnavailable),
               actions: [
                 TextButton(
                     onPressed: () => Navigator.pop(ctx),
-                    child: const Text("OK"))
+                    child: const Text(AppStrings.ok))
               ],
             ),
           );
@@ -1112,22 +854,6 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       String? password = initialPassword;
 
       while (true) {
-        final List<String> unrarArgs = ['x', _unrarPasswordArg(password)];
-        if (overwriteChoice) {
-          unrarArgs.add('-o+'); // Overwrite all
-        } else {
-          unrarArgs.add('-o-'); // Skip existing
-        }
-
-        unrarArgs.add(sourceArchive);
-
-        if (_isViewingArchive && _selectedPaths.isNotEmpty) {
-          unrarArgs.addAll(
-            _selectedPaths.map((name) => _getFullArchivePath(name)).toList(),
-          );
-        }
-        unrarArgs.add(outputDir);
-
         try {
           if (mounted && !loadingVisible) {
             showDialog(
@@ -1139,26 +865,37 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             loadingVisible = true;
           }
 
-          final result =
-              await Process.run(_binaryLocator.unrarExecutable, unrarArgs);
+          final result = await _archiveService.extractRar(
+            sourceArchive: sourceArchive,
+            outputDir: outputDir,
+            overwrite: overwriteChoice,
+            selectedFiles: _isViewingArchive && _selectedPaths.isNotEmpty
+                ? _selectedPaths.map(_getFullArchivePath).toList()
+                : const [],
+            password: password,
+          );
 
           if (loadingVisible && mounted) {
             Navigator.pop(context);
             loadingVisible = false;
           }
 
-          if (result.exitCode == 0) {
+          if (result.isSuccess) {
             _archivePassword =
                 (password != null && password.isNotEmpty) ? password : null;
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Extracted RAR to $outputDir')),
+                SnackBar(
+                  content: Text(
+                    '${AppStrings.extractionSucceededRar} $outputDir',
+                  ),
+                ),
               );
             }
             break;
           }
 
-          if (_archiveResultNeedsPassword(result)) {
+          if (result.requiresPassword) {
             final nextPassword = await _promptArchivePassword(
               archivePath: sourceArchive,
               retry: password != null && password.isNotEmpty,
@@ -1174,7 +911,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text(
-                  'RAR extraction failed: ${_archiveCommandOutput(result)}',
+                  result.errorMessage ?? AppStrings.errorRarExtractionFailed,
                 ),
               ),
             );
@@ -1185,11 +922,11 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
             Navigator.pop(context);
             loadingVisible = false;
           }
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('RAR extraction failed: $e')),
-            );
-          }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('${AppStrings.errorRarExtractionFailed}: $e')),
+        );
+      }
           return;
         }
       }
@@ -1203,7 +940,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
     // Progress State
     ValueNotifier<double> progressNotifier = ValueNotifier(0.0);
-    ValueNotifier<String> statusNotifier = ValueNotifier("Preparing...");
+    ValueNotifier<String> statusNotifier = ValueNotifier(AppStrings.preparing);
 
     // Show loading dialog
     if (mounted) {
@@ -1218,7 +955,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text("Extracting...",
+                  const Text(AppStrings.extracting,
                       style: TextStyle(fontWeight: FontWeight.bold)),
                   const SizedBox(height: 20),
                   ValueListenableBuilder<double>(
@@ -1247,54 +984,29 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
     try {
       while (true) {
-        final receivePort = ReceivePort();
-        final task = ExtractTask(
-          sourcePath: sourceArchive,
-          destinationPath: outputDir,
+        final result = await _archiveService.extractWithWorker(
+          sourceArchive: sourceArchive,
+          outputDir: outputDir,
           selectedFiles: selectedFiles,
           overwrite: overwriteChoice,
-          useSystem7z: _binaryLocator.is7zAvailable,
           flatten: false,
-          custom7zExecutable: _binaryLocator.sevenZipExecutable,
           password: password,
-          sendPort: receivePort.sendPort,
+          onProgress: (filename, current, total) {
+            statusNotifier.value =
+                '${AppStrings.extracting} $filename ($current/$total)';
+            if (total > 0) {
+              progressNotifier.value = current / total;
+            }
+          },
         );
 
-        Object? extractionError;
-        await Isolate.spawn(extractWorker, task);
-
-        await for (final message in receivePort) {
-          if (message is Map) {
-            if (message['type'] == 'progress') {
-              final filename = message['filename'];
-              final current = message['current'];
-              final total = message['total'];
-              statusNotifier.value = "Extracting $filename ($current/$total)";
-              if (total > 0) {
-                progressNotifier.value = current / total;
-              }
-            } else if (message['type'] == 'done') {
-              extractionError = null;
-              break;
-            } else if (message['type'] == 'error') {
-              extractionError = message['message'];
-              break;
-            }
-          }
-        }
-        receivePort.close();
-
-        if (extractionError == null) {
+        if (result.isSuccess) {
           _archivePassword =
               (password != null && password.isNotEmpty) ? password : null;
           break;
         }
 
-        final errorText = extractionError.toString();
-        if (SupportedExtensions.is7z(sourceArchive) &&
-            _archiveResultNeedsPassword(
-              ProcessResult(0, 1, '', errorText),
-            )) {
+        if (result.requiresPassword) {
           if (mounted) {
             Navigator.pop(context);
           }
@@ -1309,7 +1021,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
           password = nextPassword;
           progressNotifier.value = 0.0;
-          statusNotifier.value = "Preparing...";
+          statusNotifier.value = AppStrings.preparing;
 
           if (mounted) {
             showDialog(
@@ -1323,7 +1035,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Text("Extracting...",
+                        const Text(AppStrings.extracting,
                             style: TextStyle(fontWeight: FontWeight.bold)),
                         const SizedBox(height: 20),
                         ValueListenableBuilder<double>(
@@ -1350,21 +1062,23 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           continue;
         }
 
-        throw Exception(errorText);
+        throw Exception(result.errorMessage ?? AppStrings.errorExtraction);
       }
 
       if (mounted) Navigator.pop(context); // Close loading
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Extracted to $outputDir')),
+          SnackBar(
+            content: Text('${AppStrings.extractionSucceeded} $outputDir'),
+          ),
         );
       }
     } catch (e) {
       if (mounted) Navigator.pop(context); // Close loading
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Extraction failed: $e')),
+          SnackBar(content: Text('${AppStrings.errorExtraction}: $e')),
         );
       }
     }
@@ -1374,42 +1088,37 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     if (_selectedPaths.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Select files to add to archive.')),
+          const SnackBar(content: Text(AppStrings.errorSelectFilesToArchive)),
         );
       }
       return;
     }
 
     String? outputFile = await FilePicker.platform.saveFile(
-      dialogTitle: 'Save Archive As',
+      dialogTitle: AppStrings.saveArchiveAs,
       fileName: 'archive.zip',
     );
 
     if (outputFile == null) return;
 
     try {
-      final encoder = ZipFileEncoder();
-      encoder.create(outputFile);
-
-      for (final path in _selectedPaths) {
-        if (FileSystemEntity.isDirectorySync(path)) {
-          encoder.addDirectory(Directory(path));
-        } else if (FileSystemEntity.isFileSync(path)) {
-          encoder.addFile(File(path));
-        }
-      }
-      encoder.close();
+      await _archiveService.createZipArchive(
+        outputFile: outputFile,
+        files: _selectedPaths,
+      );
 
       _refreshFiles(); // Refresh current view to show new file if in same dir
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Archive created: $outputFile')),
+          SnackBar(
+            content: Text('${AppStrings.archiveCreated}: $outputFile'),
+          ),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to create archive: $e')),
+          SnackBar(content: Text('${AppStrings.errorCreateArchiveFailed}: $e')),
         );
       }
     }
@@ -1423,19 +1132,18 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       showDialog(
           context: context,
           builder: (ctx) => AlertDialog(
-                title: const Text("Delete files"),
-                content: const Text(
-                    "Are you sure you want to delete the selected files?"),
+                title: const Text(AppStrings.deleteFiles),
+                content: const Text(AppStrings.deleteFilesConfirmation),
                 actions: [
                   TextButton(
                       onPressed: () => Navigator.pop(ctx),
-                      child: const Text("Cancel")),
+                      child: const Text(AppStrings.cancel)),
                   TextButton(
                       onPressed: () {
                         Navigator.pop(ctx);
                         _performDelete();
                       },
-                      child: const Text("Yes")),
+                      child: const Text(AppStrings.yes)),
                 ],
               ));
     }
@@ -1464,7 +1172,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Preparando arraste...'),
+            content: Text(AppStrings.preparingDrag),
             duration: Duration(milliseconds: 500),
           ),
         );
@@ -1474,24 +1182,21 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       if (SupportedExtensions.isRar(_archivePath!)) {
         String? password = _archivePassword;
         while (true) {
-          final args = [
-            'e',
-            '-y',
-            _unrarPasswordArg(password),
-            _archivePath!,
-            fullEntryPath,
-            tempDir.path,
-          ];
-          final result =
-              await Process.run(_binaryLocator.unrarExecutable, args);
+          final result = await _archiveService.extractRar(
+            sourceArchive: _archivePath!,
+            outputDir: tempDir.path,
+            overwrite: true,
+            selectedFiles: [fullEntryPath],
+            password: password,
+          );
 
-          if (result.exitCode == 0 && destFile.existsSync()) {
+          if (result.isSuccess && destFile.existsSync()) {
             _archivePassword =
                 (password != null && password.isNotEmpty) ? password : null;
             return destPath;
           }
 
-          if (!_archiveResultNeedsPassword(result)) {
+          if (!result.requiresPassword) {
             return null;
           }
 
@@ -1511,48 +1216,23 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           SupportedExtensions.is7z(_archivePath!) ? _archivePassword : null;
 
       while (true) {
-        final receivePort = ReceivePort();
-        final task = ExtractTask(
-          sourcePath: _archivePath!,
-          destinationPath: tempDir.path,
+        final result = await _archiveService.extractWithWorker(
+          sourceArchive: _archivePath!,
+          outputDir: tempDir.path,
           selectedFiles: [fullEntryPath],
           overwrite: true,
-          useSystem7z: _binaryLocator.is7zAvailable,
-          custom7zExecutable: _binaryLocator.sevenZipExecutable,
           flatten: true,
           password: password,
-          sendPort: receivePort.sendPort,
         );
 
-        Object? extractionError;
-        await Isolate.spawn(extractWorker, task);
-
-        await for (final message in receivePort) {
-          if (message is Map) {
-            if (message['type'] == 'done') {
-              extractionError = null;
-              break;
-            }
-            if (message['type'] == 'error') {
-              extractionError = message['message'];
-              break;
-            }
-          }
-        }
-        receivePort.close();
-
-        if (extractionError == null) {
+        if (result.isSuccess) {
           _archivePassword =
               (password != null && password.isNotEmpty) ? password : null;
           return destPath;
         }
 
-        final errorText = extractionError.toString();
-        if (!SupportedExtensions.is7z(_archivePath!) ||
-            !_archiveResultNeedsPassword(
-              ProcessResult(0, 1, '', errorText),
-            )) {
-          throw Exception(errorText);
+        if (!result.requiresPassword) {
+          throw Exception(result.errorMessage ?? AppStrings.errorExtraction);
         }
 
         final nextPassword = await _promptArchivePassword(
@@ -1574,7 +1254,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     showDialog(
       context: context,
       builder: (context) => SimpleDialog(
-        title: const Text('WinRAR Wizard'),
+        title: const Text(AppStrings.wizardTitle),
         children: [
           SimpleDialogOption(
             onPressed: () {
@@ -1587,7 +1267,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
                 children: [
                   Icon(Icons.unarchive, color: Colors.blue),
                   SizedBox(width: 12),
-                  Text('Unpack an archive'),
+                  Text(AppStrings.wizardExtract),
                 ],
               ),
             ),
@@ -1603,7 +1283,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
                 children: [
                   Icon(Icons.archive, color: Colors.green),
                   SizedBox(width: 12),
-                  Text('Create a new archive'),
+                  Text(AppStrings.wizardCreate),
                 ],
               ),
             ),
@@ -1614,19 +1294,24 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   }
 
   void _showInfo() {
-    String title = "Information";
+    String title = AppStrings.infoTitle;
     List<Widget> details = [];
 
     if (_selectedPaths.isEmpty) {
       // Show info about current directory/archive
-      title = _isViewingArchive ? "Archive Information" : "Folder Information";
-      details.add(
-          Text("Path: ${_isViewingArchive ? _archivePath : _currentPath}"));
+      title = _isViewingArchive
+          ? AppStrings.archiveInfoTitle
+          : AppStrings.folderInfoTitle;
+      details.add(Text(
+        '${AppStrings.infoPath}: ${_isViewingArchive ? _archivePath : _currentPath}',
+      ));
       details.add(const SizedBox(height: 8));
 
       int count =
           _isViewingArchive ? _currentArchiveEntries.length : _files.length;
-      details.add(Text("Contains: $count items"));
+      details.add(
+        Text('${AppStrings.infoContains}: $count ${AppStrings.infoItems}'),
+      );
 
       // Calcular tamanho total
       int totalSize = 0;
@@ -1634,28 +1319,29 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         for (var e in _currentArchiveEntries) {
           totalSize += e.size;
         }
-        details.add(Text("Tamanho Total: ${filesize(totalSize)}"));
+        details.add(Text('${AppStrings.infoTotalSize}: ${filesize(totalSize)}'));
       }
     } else {
       // Informações da seleção
-      title = "Detalhes da Seleção";
-      details.add(Text("Selecionados: ${_selectedPaths.length} itens"));
+      title = AppStrings.typeSelectedDetails;
+      details.add(
+        Text('${AppStrings.infoSelected}: ${_selectedPaths.length} ${AppStrings.infoItems}'),
+      );
       details.add(const Divider());
 
       if (_selectedPaths.length == 1) {
         String path = _selectedPaths.first;
-        details.add(Text("Nome: ${p.basename(path)}"));
+        details.add(Text('${AppStrings.infoName}: ${p.basename(path)}'));
 
         if (!_isViewingArchive) {
           try {
             final stat = File(path).statSync();
-            details.add(Text("Tamanho: ${filesize(stat.size)}"));
+            details.add(Text('${AppStrings.infoSize}: ${filesize(stat.size)}'));
             details.add(Text(
-                "Modificado: ${DateFormat('yyyy-MM-dd HH:mm').format(stat.modified)}"));
-            details.add(Text("Permissões: ${stat.modeString()}"));
+                '${AppStrings.infoModified}: ${DateFormat('yyyy-MM-dd HH:mm').format(stat.modified)}'));
+            details.add(Text('${AppStrings.infoPermissions}: ${stat.modeString()}'));
           } catch (e) {
-            details.add(
-                const Text("Não foi possível ler informações do arquivo."));
+            details.add(const Text(AppStrings.fileAccessInfoUnavailable));
           }
         } else {
           // Buscar entrada na lista do arquivo
@@ -1665,16 +1351,16 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
               );
 
           if (entry != null) {
-            details.add(Text("Tamanho: ${filesize(entry.size)}"));
+            details.add(Text('${AppStrings.infoSize}: ${filesize(entry.size)}'));
             if (entry.dateModified != null) {
               details.add(Text(
-                "Modificado: ${DateFormat('yyyy-MM-dd HH:mm').format(entry.dateModified!)}",
+                '${AppStrings.infoModified}: ${DateFormat('yyyy-MM-dd HH:mm').format(entry.dateModified!)}',
               ));
             }
           }
         }
       } else {
-        details.add(const Text("Múltiplos itens selecionados."));
+        details.add(const Text(AppStrings.typeMultipleItems));
       }
     }
 
@@ -1690,7 +1376,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text("Close")),
+              child: const Text(AppStrings.close)),
         ],
       ),
     );
@@ -1699,7 +1385,9 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   Future<void> _showRepair() async {
     if (_selectedPaths.isEmpty || _selectedPaths.length > 1) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Select a single archive to repair.')),
+        const SnackBar(
+          content: Text(AppStrings.errorSelectSingleArchiveToRepair),
+        ),
       );
       return;
     }
@@ -1710,8 +1398,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     if (ext != '.rar' && ext != '.zip') {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content:
-                Text('Repair is only supported for RAR and ZIP archives.')),
+          content: Text(AppStrings.errorRepairOnlyRarZip),
+        ),
       );
       return;
     }
@@ -1720,16 +1408,16 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     bool? confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text("Repair Archive"),
+        title: const Text(AppStrings.repairArchiveTitle),
         content:
-            Text("Attempt to repair '$path'?\nThis will create a fixed copy."),
+            Text("${AppStrings.repairConfirmationPrefix} '$path'?\n${AppStrings.repairConfirmationSuffix}"),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text("Cancel")),
+              child: const Text(AppStrings.cancel)),
           TextButton(
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text("Repair")),
+              child: const Text(AppStrings.repairArchiveAction)),
         ],
       ),
     );
@@ -1737,38 +1425,25 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     if (confirm != true) return;
 
     if (ext == '.rar') {
-      if (!_binaryLocator.isRarAvailable) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('rar não encontrado.')),
-          );
-        }
-        return;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text(AppStrings.attemptingRepair)),
+        );
       }
-
-      // rar r <archive>
-      try {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Attempting repair...')));
-        }
-        final result =
-            await Process.run(_binaryLocator.rarExecutable, ['r', path]);
-        if (mounted) {
-          if (result.exitCode == 0) {
-            _showInfoDialog("Repair Complete", "Output:\n${result.stdout}");
-          } else {
-            _showInfoDialog("Repair Failed", "Error:\n${result.stderr}");
-          }
-        }
-      } catch (e) {
-        if (mounted) _showInfoDialog("Error", e.toString());
-      }
+      final result = await _archiveService.repairArchive(path);
+      if (!mounted) return;
+      _showInfoDialog(
+        AppStrings.repairArchiveTitle,
+        result.isSuccess
+            ? AppStrings.attemptingRepair
+            : (result.errorMessage ?? AppStrings.errorRarRepairToolUnavailable),
+      );
     } else {
       // Zip repair logic (generic placeholder or basic zip -F if available)
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('Zip repair not fully implemented yet.')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text(AppStrings.errorZipRepairNotImplemented)),
+        );
       }
     }
   }
@@ -1781,7 +1456,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         content: SingleChildScrollView(child: Text(content)),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text("OK"))
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text(AppStrings.ok))
         ],
       ),
     );
@@ -1789,9 +1465,6 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
   void _performDelete() async {
     if (_isViewingArchive && _archivePath != null) {
-      // Delete from archive using rar d or 7z d
-      final ext = p.extension(_archivePath!).toLowerCase();
-
       // Show progress
       if (mounted) {
         showDialog(
@@ -1802,58 +1475,34 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       }
 
       try {
-        ProcessResult result;
-        // Get the full paths of selected items
         final filesToDelete =
             _selectedPaths.map((name) => _getFullArchivePath(name)).toList();
-
-        if (ext == '.rar') {
-          if (!_binaryLocator.isRarAvailable) {
-            if (mounted) Navigator.pop(context);
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                  content:
-                      Text('Install "rar" CLI to delete from RAR archives.')),
-            );
-            return;
-          }
-          // rar d <archive> <files...>
-          final args = ['d', _archivePath!, ...filesToDelete];
-          result = await Process.run(_binaryLocator.rarExecutable, args);
-        } else {
-          if (!_binaryLocator.is7zAvailable) {
-            if (mounted) Navigator.pop(context);
-            if (!mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                  content: Text('Install "7z" to delete from archives.')),
-            );
-            return;
-          }
-          // 7z d <archive> <files...>
-          final args = ['d', _archivePath!, ...filesToDelete];
-          result = await Process.run(_binaryLocator.sevenZipExecutable, args);
-        }
+        final result = await _archiveService.deleteFromArchive(
+          archivePath: _archivePath!,
+          filesToDelete: filesToDelete,
+        );
 
         if (mounted) Navigator.pop(context);
         if (!mounted) return;
 
-        if (result.exitCode == 0) {
+        if (result.isSuccess) {
           setState(() => _selectedPaths.clear());
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Files deleted successfully.')),
+            const SnackBar(content: Text(AppStrings.filesDeletedSuccessfully)),
           );
           _openArchive(_archivePath!); // Refresh
         } else {
           showDialog(
             context: context,
             builder: (ctx) => AlertDialog(
-              title: const Text('Delete Error'),
-              content: Text('Failed to delete files:\n${result.stderr}'),
+              title: const Text(AppStrings.deleteErrorTitle),
+              content: Text(
+                '${AppStrings.errorDeleteFailed}:\n${result.errorMessage ?? AppStrings.errorGeneric}',
+              ),
               actions: [
                 TextButton(
                     onPressed: () => Navigator.pop(ctx),
-                    child: const Text('OK'))
+                    child: const Text(AppStrings.ok))
               ],
             ),
           );
@@ -1862,7 +1511,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         if (mounted) Navigator.pop(context);
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
+          SnackBar(content: Text('${AppStrings.errorGeneric}: $e')),
         );
       }
     } else {
@@ -1907,12 +1556,12 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
       child: Row(
         children: [
-          _menuItem("File"),
-          _menuItem("Commands"),
-          _menuItem("Tools"),
-          _menuItem("Favorites"),
-          _menuItem("Options"),
-          _menuItem("Help"),
+          _menuItem(AppStrings.menuFile),
+          _menuItem(AppStrings.menuCommands),
+          _menuItem(AppStrings.menuTools),
+          _menuItem(AppStrings.menuFavorites),
+          _menuItem(AppStrings.menuOptions),
+          _menuItem(AppStrings.menuHelp),
         ],
       ),
     );
@@ -1980,7 +1629,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           IconButton(
             icon: const Icon(Icons.arrow_upward),
             onPressed: _navigateUp,
-            tooltip: "Up one level",
+            tooltip: AppStrings.upOneLevel,
             constraints: const BoxConstraints(),
             padding: const EdgeInsets.all(8),
           ),
@@ -2356,7 +2005,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     String sizeStr = "";
     String dateStr = "";
     String createdStr = "";
-    String typeStr = "File";
+    String typeStr = AppStrings.typeFile;
 
     try {
       final stat = file.statSync();
@@ -2366,10 +2015,11 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
         sizeStr = filesize(stat.size);
         final ext = p.extension(file.path);
         if (ext.isNotEmpty) {
-          typeStr = "${ext.substring(1).toUpperCase()} File";
+          typeStr =
+              "${ext.substring(1).toUpperCase()} ${AppStrings.typeFile.toLowerCase()}";
         }
       } else {
-        typeStr = "File Folder";
+        typeStr = AppStrings.typeFileFolder;
       }
     } catch (e) {
       // Access error
@@ -2573,7 +2223,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       showDialog(
         context: context,
         builder: (ctx) => SimpleDialog(
-          title: const Text("File Drop Action"),
+          title: const Text(AppStrings.fileDropAction),
           children: [
             SimpleDialogOption(
               onPressed: () {
@@ -2586,7 +2236,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
                 child: Row(children: [
                   Icon(Icons.archive),
                   SizedBox(width: 8),
-                  Text("Compress to Archive")
+                  Text(AppStrings.compressToArchive)
                 ]),
               ),
             ),
@@ -2601,7 +2251,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
                 child: Row(children: [
                   Icon(Icons.copy),
                   SizedBox(width: 8),
-                  Text("Copy Here")
+                  Text(AppStrings.copyHere)
                 ]),
               ),
             ),
@@ -2612,7 +2262,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   }
 
   Future<void> _compressFilesToCurrentArchive(List<String> files) async {
-    // Atualizacao in-place depende de CLI externa.
+    // Atualização in-place depende de CLI externa.
     final ext = p.extension(_archivePath!).toLowerCase();
 
     if (ext == '.rar') {
@@ -2639,83 +2289,18 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     }
 
     try {
-      ProcessResult result;
-
-      if (ext == '.rar') {
-        // rar a -ep1 -ap<destino> <archive_name> <files...>
-        // -ep1: Exclude base directory from names
-        // -ap<path>: Set path inside archive
-        final List<String> args = ['a', '-ep1'];
-        if (_archiveVirtualPath.isNotEmpty) {
-          // Remove trailing slash for -ap flag
-          String destPath = _archiveVirtualPath;
-          if (destPath.endsWith('/')) {
-            destPath = destPath.substring(0, destPath.length - 1);
-          }
-          args.add('-ap$destPath');
-        }
-        args.add(_archivePath!);
-        args.addAll(files);
-        result = await Process.run(_binaryLocator.rarExecutable, args);
-      } else {
-        // For 7z/zip: Add files to archive
-        // p7zip doesn't support -ep1, so we handle paths differently
-        if (_archiveVirtualPath.isNotEmpty) {
-          // Create temp dir with the destination structure
-          final tempDir = await Directory.systemTemp.createTemp('gpmt_add_');
-          try {
-            final destDir =
-                Directory(p.join(tempDir.path, _archiveVirtualPath));
-            await destDir.create(recursive: true);
-
-            // Copy files to the destination structure
-            for (final filePath in files) {
-              final file = File(filePath);
-              if (await file.exists()) {
-                await file.copy(p.join(destDir.path, p.basename(filePath)));
-              }
-            }
-
-            // Add the structured temp dir to archive
-            // Use 'a' (add) with relative paths from temp dir
-            final args = ['a', _archivePath!, '.'];
-            result = await Process.run(
-              _binaryLocator.sevenZipExecutable,
-              args,
-              workingDirectory: tempDir.path,
-            );
-
-            // Cleanup temp dir
-            await tempDir.delete(recursive: true);
-          } catch (e) {
-            await tempDir.delete(recursive: true);
-            rethrow;
-          }
-        } else {
-          // Root level - add files directly using their basenames
-          // We need to be in the directory of the files to avoid full paths
-          if (files.isNotEmpty) {
-            final firstFile = File(files.first);
-            final workDir = firstFile.parent.path;
-            final basenames = files.map((f) => p.basename(f)).toList();
-            final args = ['a', _archivePath!, ...basenames];
-            result = await Process.run(
-              _binaryLocator.sevenZipExecutable,
-              args,
-              workingDirectory: workDir,
-            );
-          } else {
-            result = ProcessResult(0, 0, '', 'No files to add');
-          }
-        }
-      }
+      final result = await _archiveService.addFilesToArchive(
+        archivePath: _archivePath!,
+        files: files,
+        archiveVirtualPath: _archiveVirtualPath,
+      );
 
       if (mounted) Navigator.pop(context); // Close loading
 
-      if (result.exitCode == 0) {
+      if (result.isSuccess) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Files added successfully.')),
+            const SnackBar(content: Text(AppStrings.filesAddedSuccessfully)),
           );
         }
         _openArchive(_archivePath!); // Refresh
@@ -2724,12 +2309,14 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           showDialog(
             context: context,
             builder: (ctx) => AlertDialog(
-              title: const Text('Add Error'),
-              content: Text('Failed to add files:\n${result.stderr}'),
+              title: const Text(AppStrings.addErrorTitle),
+              content: Text(
+                '${AppStrings.errorAddFilesFailed}:\n${result.errorMessage ?? AppStrings.errorGeneric}',
+              ),
               actions: [
                 TextButton(
                     onPressed: () => Navigator.pop(ctx),
-                    child: const Text("OK"))
+                    child: const Text(AppStrings.ok))
               ],
             ),
           );
@@ -2739,21 +2326,21 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
       if (mounted) Navigator.pop(context);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
+          SnackBar(content: Text('${AppStrings.errorGeneric}: $e')),
         );
       }
     }
   }
 
   Future<void> _createArchiveFromDropped(List<String> files) async {
-    String defaultName = "NewArchive.zip";
+    String defaultName = 'NovoArquivo.zip';
 
     if (files.length == 1) {
       defaultName = "${p.basenameWithoutExtension(files.first)}.zip";
     }
 
     String? outputFile = await FilePicker.platform.saveFile(
-      dialogTitle: 'Create Archive',
+      dialogTitle: AppStrings.createArchive,
       fileName: defaultName,
     );
 
@@ -2768,29 +2355,10 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
     }
 
     try {
-      // Prefer 7z if available
-
-      if (_binaryLocator.is7zAvailable) {
-        final args = ['a', outputFile, ...files];
-
-        await Process.run(_binaryLocator.sevenZipExecutable, args);
-      } else {
-        // Fallback to Dart archive
-
-        final encoder = ZipFileEncoder();
-
-        encoder.create(outputFile);
-
-        for (final path in files) {
-          if (FileSystemEntity.isDirectorySync(path)) {
-            encoder.addDirectory(Directory(path));
-          } else if (FileSystemEntity.isFileSync(path)) {
-            encoder.addFile(File(path));
-          }
-        }
-
-        encoder.close();
-      }
+      await _archiveService.createArchiveFromFiles(
+        outputFile: outputFile,
+        files: files,
+      );
 
       if (mounted) Navigator.pop(context); // Close loading
 
@@ -2800,7 +2368,7 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to create archive: $e')),
+          SnackBar(content: Text('${AppStrings.errorCreateArchiveFailed}: $e')),
         );
       }
     }
@@ -2818,8 +2386,8 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
 
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-                content: Text(
-                    'Folder copy not fully implemented in drag logic yet.')),
+              content: Text(AppStrings.errorFolderCopyNotImplemented),
+            ),
           );
         } else {
           File(srcPath).copySync(destPath);
@@ -2845,11 +2413,11 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
           const Icon(Icons.info_outline, size: 14),
           const SizedBox(width: 4),
           if (selectedCount > 0)
-            Text("$selectedCount selected")
+            Text('$selectedCount ${AppStrings.selectedSuffix}')
           else
-            Text("$count objects"),
+            Text('$count ${AppStrings.objectsSuffix}'),
           const Spacer(),
-          const Text("Ready"),
+          const Text(AppStrings.ready),
         ],
       ),
     );

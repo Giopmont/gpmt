@@ -11,9 +11,9 @@ import 'package:gpmt/main.dart';
 import 'package:gpmt/utils/constants.dart';
 
 void main() {
-  testWidgets('WinRAR app smoke test', (WidgetTester tester) async {
+  testWidgets('GPMT app smoke test', (WidgetTester tester) async {
     // Build our app and trigger a frame.
-    await tester.pumpWidget(const WinRARApp(enableBackgroundInit: false));
+    await tester.pumpWidget(const GpmtApp(enableBackgroundInit: false));
     await tester.pump();
 
     // Verify that the toolbar exists.
