@@ -28,7 +28,7 @@ class GpmtApp extends StatelessWidget {
   const GpmtApp({
     super.key,
     this.args = const [],
-    this.enableBackgroundInit = true,
+    this.enableBackgroundInit = false,
   });
 
   @override
@@ -55,7 +55,7 @@ class GpmtMainScreen extends StatefulWidget {
   const GpmtMainScreen({
     super.key,
     this.args = const [],
-    this.enableBackgroundInit = true,
+    this.enableBackgroundInit = false,
   });
 
   @override
@@ -1756,7 +1756,7 @@ class _GpmtMainScreenState extends State<GpmtMainScreen> {
 
     // Workaround: Only wrap with DropRegion after Flutter engine is fully ready
     // to avoid crash in release mode caused by FlutterView being nil
-    if (!_dropRegionReady) {
+    if (!_dropRegionReady || Platform.isMacOS) {
       return listContent;
     }
 
