@@ -2612,30 +2612,21 @@ class _WinRARMainScreenState extends State<WinRARMainScreen> {
   }
 
   Future<void> _compressFilesToCurrentArchive(List<String> files) async {
-    // We strictly need 7z or zip for this. Dart archive lib is bad at 'updating' in place.
-
-    if (!_binaryLocator.is7zAvailable) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text(
-                'Install "7z" (p7zip) to enable drag-and-drop compression updates.')),
-      );
-
-      return;
-    }
-
-    String ext = p.extension(_archivePath!).toLowerCase();
+    // Atualizacao in-place depende de CLI externa.
+    final ext = p.extension(_archivePath!).toLowerCase();
 
     if (ext == '.rar') {
       if (!_binaryLocator.isRarAvailable) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text(
-                  'To add files to RAR archives, please install the "rar" CLI tool (non-free).')),
+          const SnackBar(content: Text(AppStrings.errorRarAddToolUnavailable)),
         );
         return;
       }
-      // Continue to RAR logic below (we will need to branch logic based on extension)
+    } else if (!_binaryLocator.is7zAvailable) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text(AppStrings.error7zAddToolUnavailable)),
+      );
+      return;
     }
 
     // Show Progress
